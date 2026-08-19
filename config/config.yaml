@@ -88,5 +88,7 @@ run:
   data_dir: data
   output_dir: output
   t0_signal: none                 # none | low_absorb | high_throw
-  sector_scan_limit: 30           # 运营参数：每日拉取成分股的板块数量上限（按当日涨幅排序取前N，控制API调用量；0=不限制）
+  sector_scan_limit: 6            # 板块优先：仅拉取涨幅前6板块的成分股（轻量化，控制API调用量）
+  per_board_stock_limit: 4        # 每板块进入主升评分的个股上限（成交额排序）
+  stock_score_universe_limit: 24  # 主升评分总股数上限（≈6板块×4只）
   hist_days: 300                  # 拉取日K的历史天数（需覆盖MA65+缓冲）

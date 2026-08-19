@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>双引擎选股择时系统</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#0e1420; --line:#1e2839; --line2:#2a3650;
+    --txt:#dbe4f0; --dim:#7d8ba1; --faint:#55627a;
+    --up:#ff5d5d; --down:#3ecf8e; --accent:#4d9fff; --gold:#e8b93e; --warn:#e88b3e; --violet:#9d7bff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.6 "Microsoft YaHei","PingFang SC",sans-serif;padding:0 0 40px}
+  ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px}
+
+  /* ---------- 顶栏 ---------- */
+  .topbar{position:sticky;top:0;z-index:50;background:rgba(11,15,23,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .logo{font-size:19px;font-weight:700;letter-spacing:.5px}
+  .logo em{color:var(--accent);font-style:normal}
+  .topbar .meta{color:var(--dim);font-size:12.5px}
+  .topbar .spacer{flex:1}
+  .btn{border:1px solid var(--line2);background:var(--panel);color:var(--txt);padding:8px 18px;
+    border-radius:8px;font-size:13.5px;cursor:pointer;transition:.15s;font-family:inherit}
+  .btn:hover{border-color:var(--accent);color:#fff}
+  .btn.primary{background:linear-gradient(135deg,#2d7dd2,#4d9fff);border:none;color:#fff;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.12)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.sm{padding:3px 12px;font-size:12px;border-radius:6px}
+  .btn.danger{border-color:#7a3030;color:#ff9d9d}
+  .btn.danger:hover{border-color:var(--up);background:#2a1518}
+
+  /* ---------- 布局 ---------- */
+  .wrap{max-width:1460px;margin:0 auto;padding:22px 28px}
+  .grid{display:grid;gap:18px;margin-bottom:18px}
+  .g-r1{grid-template-columns:340px 1fr}
+  .g-r2{grid-template-columns:430px 1fr}
+  @media(max-width:1100px){.g-r1,.g-r2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card h3{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .card h3 .bar{width:4px;height:16px;border-radius:2px;background:var(--accent)}
+  .card h3 .cnt{color:var(--faint);font-weight:400;font-size:12px;margin-left:auto}
+
+  /* ---------- 情绪 ---------- */
+  .temp-big{font-size:58px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+  .zone-chip{display:inline-block;padding:4px 16px;border-radius:20px;font-size:14px;font-weight:600;margin:10px 0 6px}
+  .zone-rule{color:var(--dim);font-size:12.5px}
+  .pos-caps{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);display:flex;gap:18px;font-size:12.5px;color:var(--dim)}
+  .pos-caps b{color:var(--txt);font-size:15px;display:block}
+  .factors{display:flex;flex-direction:column;gap:11px}
+  .frow{display:grid;grid-template-columns:88px 1fr 46px;align-items:center;gap:10px;font-size:12.5px}
+  .frow .fname{color:var(--dim)}
+  .fbar{height:8px;border-radius:4px;background:var(--panel2);overflow:hidden}
+  .fbar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#2d7dd2,#4d9fff)}
+  .frow .fval{text-align:right;color:var(--txt);font-variant-numeric:tabular-nums}
+
+  /* ---------- 情绪周期图 ---------- */
+  .cycle-legend{display:flex;gap:14px;font-size:11.5px;color:var(--dim);margin-top:6px;flex-wrap:wrap}
+  .cycle-legend s{display:inline-block;width:10px;height:10px;border-radius:2px;text-decoration:none;margin-right:4px}
+
+  /* ---------- 表格 ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{color:var(--faint);font-weight:500;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;background:var(--panel);font-size:12px;white-space:nowrap}
+  td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  tr:hover td{background:rgba(77,159,255,.05)}
+  .tbl-wrap{max-height:340px;overflow:auto;margin:0 -8px}
+  .num{font-variant-numeric:tabular-nums}
+  .up{color:var(--up)} .down{color:var(--down)}
+  .rank-pill{display:inline-block;min-width:24px;text-align:center;padding:1px 7px;border-radius:10px;
+    background:var(--panel2);border:1px solid var(--line2);font-size:12px}
+  .rank-pill.top3{background:#3d2f10;border-color:#7a5c1e;color:var(--gold)}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;margin:1px 2px}
+  .tag.atk{background:#3a1a1a;color:#ff9d9d}.tag.def{background:#12283a;color:#7ec3ff}
+
+  /* ---------- Tabs ---------- */
+  .tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:0;padding:0 4px}
+  .tab{padding:9px 20px;font-size:13.5px;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;user-select:none}
+  .tab:hover{color:var(--txt)}
+  .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+  .tab .n{background:var(--panel2);border:1px solid var(--line2);border-radius:9px;padding:0 7px;font-size:11px;margin-left:5px}
+  .pool-actions{text-align:right;padding:8px 4px 2px;color:var(--faint);font-size:12px}
+  .score-bar{display:inline-block;width:52px;height:6px;background:var(--panel2);border-radius:3px;vertical-align:middle;margin-right:6px;overflow:hidden}
+  .score-bar i{display:block;height:100%;border-radius:3px}
+
+  /* ---------- 自选卡片 ---------- */
+  .watch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(560px,1fr));gap:18px}
+  @media(max-width:700px){.watch-grid{grid-template-columns:1fr}}
+  .wcard{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;display:flex;gap:16px}
+  .wcard .left{flex:1;min-width:0}
+  .wcard .right{width:300px;flex-shrink:0}
+  .whead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .wname{font-size:16.5px;font-weight:700}
+  .wcode{color:var(--faint);font-size:12px;font-variant-numeric:tabular-nums}
+  .state-pill{padding:2px 11px;border-radius:11px;font-size:12px;font-weight:600}
+  .st-EMPTY{background:#2a2a2a;color:#aaa}.st-BUILDING{background:#12315e;color:#7eb3ff}
+  .st-HOLDING{background:#0f3d24;color:#5fe0a0}.st-REDUCING{background:#4d3410;color:#e8c068}
+  .st-EXITED{background:#4a1418;color:#ff8a8a}
+  .kv{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin:6px 0}
+  .kv b{color:var(--txt)}
+  .sigline{font-size:12.5px;margin:6px 0;padding:6px 10px;border-radius:8px;background:var(--panel2)}
+  .sig-BP{border-left:3px solid var(--down)}.sig-SP{border-left:3px solid var(--up)}.sig-none{border-left:3px solid var(--line2);color:var(--faint)}
+  .advice{font-size:12.5px;line-height:1.75;color:#b9c6da;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;padding:10px 12px;white-space:pre-wrap;max-height:210px;overflow:auto}
+  .kchart{border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+  .alerts{margin-top:8px;font-size:12px}
+  .alerts .al{padding:4px 10px;border-radius:7px;margin:3px 0;background:var(--panel2)}
+  .al.p0{border-left:3px solid var(--up)}.al.p1{border-left:3px solid var(--warn)}.al.p2{border-left:3px solid var(--accent)}
+
+  /* ---------- 添加自选 ---------- */
+  .addbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  .addbar input,.addbar select{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);
+    padding:8px 12px;border-radius:8px;font-size:13px;font-family:inherit;outline:none}
+  .addbar input:focus,.addbar select:focus{border-color:var(--accent)}
+  .addbar input{width:150px}
+
+  /* ---------- 风险/空态/加载 ---------- */
+  .risk-item{font-size:12.5px;padding:5px 0 5px 12px;border-left:2px solid var(--warn);margin:5px 0;color:#c8b48a}
+  .empty{padding:70px 20px;text-align:center;color:var(--dim)}
+  .empty .big{font-size:40px;margin-bottom:12px}
+  .toast{position:fixed;right:24px;bottom:24px;z-index:99;display:flex;flex-direction:column;gap:8px}
+  .toast div{background:#1a2438;border:1px solid var(--line2);border-left:3px solid var(--accent);
+    padding:10px 16px;border-radius:9px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.4);
+    animation:tin .25s ease;max-width:340px}
+  .toast div.err{border-left-color:var(--up)}
+  @keyframes tin{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.25);
+    border-top-color:#fff;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .cover{position:fixed;inset:0;z-index:80;background:rgba(11,15,23,.72);backdrop-filter:blur(3px);
+    display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px}
+  .cover .ring{width:46px;height:46px;border:4px solid rgba(77,159,255,.2);border-top-color:var(--accent);
+    border-radius:50%;animation:sp .9s linear infinite}
+  .cover .txt{color:var(--txt);font-size:15px}
+  .cover .sub{color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">双引擎<em>选股择时</em>系统</div>
+  <div class="meta" id="metaLine">—</div>
+  <div class="spacer"></div>
+  <button class="btn primary" id="btnRefresh" onclick="doRefresh()">⟳ 行情刷新</button>
+</div>
+
+<div class="wrap" id="main">
+  <div class="empty"><div class="big">◌</div>加载中…</div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="cover" id="cover" style="display:none">
+  <div class="ring"></div>
+  <div class="txt">正在拉取行情并分析…</div>
+  <div class="sub">板块筛选 → 个股评分 → 双引擎融合，约 1-2 分钟，完成后自动刷新</div>
+</div>
+
+<script>
+/* ================================================================ 工具 */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pctCls = v => v == null ? '' : (v > 0 ? 'up' : v < 0 ? 'down' : '');
+const fmtPct = v => v == null ? '—' : (v > 0 ? '+' : '') + (+v).toFixed(2) + '%';
+
+function toast(msg, err) {
+  const d = document.createElement('div');
+  if (err) d.className = 'err';
+  d.textContent = msg;
+  $('#toast').appendChild(d);
+  setTimeout(() => d.remove(), 3800);
+}
+
+const ZONE_COLOR = {'冰点区':'#4d9fff','退潮区':'#6fb3e8','震荡区':'#e8b93e','偏强区':'#e88b3e','高热区':'#ff5d5d'};
+const ZONE_BG   = {'冰点区':'#122438','退潮区':'#122b3a','震荡区':'#2e2812','偏强区':'#38210f','高热区':'#3a1214'};
+
+/* ================================================================ 数据加载 */
+let DATA = null, WL = {positions:[], watching:[]};
+
+async function boot() {
+  try {
+    const [dr, wr] = await Promise.all([
+      fetch('/api/data').then(r => r.json()),
+      fetch('/api/watchlist').then(r => r.json()),
+    ]);
+    WL = wr;
+    if (dr.empty) renderEmpty(); else { DATA = dr; render(); }
+  } catch (e) { renderEmpty(); }
+}
+
+function renderEmpty() {
+  $('#metaLine').textContent = '尚无数据';
+  $('#main').innerHTML = `
+    <div class="card"><div class="empty">
+      <div class="big">📈</div>
+      <div style="font-size:16px;margin-bottom:6px">还没有分析数据</div>
+      <div style="color:var(--dim);font-size:13px">点击右上角「行情刷新」拉取今日数据并生成分析（约1-2分钟）</div>
+      <div style="margin-top:22px"><button class="btn primary" onclick="doRefresh()">⟳ 立即刷新</button></div>
+    </div></div>`;
+}
+
+async function doRefresh(t0) {
+  $('#cover').style.display = 'flex';
+  $('#btnRefresh').disabled = true;
+  try {
+    await fetch('/api/refresh', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({t0_signal: t0 || 'none'})});
+    // 轮询状态直到完成
+    for (;;) {
+      await new Promise(r => setTimeout(r, 3000));
+      const st = await fetch('/api/status').then(r => r.json());
+      if (!st.running) {
+        if (st.error) toast('分析失败：' + st.error, true);
+        break;
+      }
+    }
+    const dr = await fetch('/api/data?v=' + Date.now()).then(r => r.json());
+    if (!dr.empty) { DATA = dr; render(); toast('分析完成，界面已更新'); }
+  } catch (e) { toast('刷新失败：' + e.message, true); }
+  $('#cover').style.display = 'none';
+  $('#btnRefresh').disabled = false;
+}
+
+/* ================================================================ 渲染主结构 */
+function render() {
+  const s = DATA.sentiment, zone = s.zone || {};
+  $('#metaLine').textContent = `数据日期 ${DATA.date} · 生成于 ${DATA.generated_at || ''}`;
+
+  let pools = DATA.pools || {};
+  $('#main').innerHTML = `
+    <div class="grid g-r1">
+      ${cardSentiment(s, zone)}
+      ${cardCycle(DATA.sentiment_history || [])}
+    </div>
+    <div class="grid g-r2">
+      ${cardFactors(s)}
+      ${cardSectors(DATA.sectors || {})}
+    </div>
+    ${cardPools(pools)}
+    ${cardWatch()}
+    ${cardRisk()}`;
+}
+
+const card = (title, body, cnt) => `<div class="card"><h3><span class="bar"></span>${title}${cnt != null ? `<span class="cnt">${cnt}</span>` : ''}</h3>${body}</div>`;
+
+/* ---------- ① 情绪温度 ---------- */
+function cardSentiment(s, zone) {
+  const zc = ZONE_COLOR[zone.name] || '#888', zb = ZONE_BG[zone.name] || '#222';
+  return card('情绪温度', `
+    <div class="temp-big" style="color:${zc}">${(+s.temperature).toFixed(1)}</div>
+    <span class="zone-chip" style="color:${zc};background:${zb}">${zone.name||'—'} · ${zone.label||''}</span>
+    <div class="zone-rule">${zone.rule || ''}</div>
+    <div class="pos-caps">
+      <div><b>≤${zone.max_total ?? '—'}%</b>总仓位上限</div>
+      <div><b>≤${zone.max_single ?? '—'}%</b>单票上限</div>
+      <div><b>≤${zone.max_count ?? '—'}只</b>持仓数上限</div>
+    </div>`);
+}
+
+/* ---------- ② 情绪周期（SVG 折线 + 五区色带） ---------- */
+function cardCycle(hist) {
+  if (!hist || hist.length < 2) return card('情绪周期', '<div class="empty" style="padding:30px">历史数据不足（运行两天后即可画出周期曲线）</div>');
+  const W = 1000, H = 250, PL = 38, PR = 12, PT = 14, PB = 26;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const zones = [[0,34,'冰点区'],[35,47,'退潮区'],[48,61,'震荡区'],[62,74,'偏强区'],[75,100,'高热区']];
+  const y = t => PT + (100 - t) / 100 * ih;
+  const xs = hist.map((_, i) => PL + (hist.length === 1 ? 0 : i / (hist.length - 1) * iw));
+  const line = hist.map((h, i) => `${i ? 'L' : 'M'}${xs[i].toFixed(1)},${y(h.temp).toFixed(1)}`).join('');
+  const area = `${line} L${xs[xs.length-1].toFixed(1)},${PT+ih} L${PL},${PT+ih} Z`;
+  // 色带
+  let bands = zones.map(([a, b, n]) =>
+    `<rect x="${PL}" y="${y(b)}" width="${iw}" height="${y(a)-y(b)}" fill="${ZONE_BG[n]}" opacity=".75"/>
+     <text x="${PL+6}" y="${y(b)+13}" fill="${ZONE_COLOR[n]}" opacity=".55" font-size="11">${n}</text>`).join('');
+  // 分隔线
+  let gl = [0,25,50,75,100].map(t =>
+    `<line x1="${PL}" y1="${y(t)}" x2="${W-PR}" y2="${y(t)}" stroke="#1e2839" stroke-dasharray="3,4"/>
+     <text x="${PL-6}" y="${y(t)+4}" fill="#55627a" font-size="10.5" text-anchor="end">${t}</text>`).join('');
+  // x 轴日期（约每 1/6 取一个）
+  let xt = '';
+  const stepN = Math.max(1, Math.floor(hist.length / 7));
+  hist.forEach((h, i) => { if (i % stepN === 0 || i === hist.length - 1)
+    xt += `<text x="${xs[i]}" y="${H-8}" fill="#55627a" font-size="10.5" text-anchor="middle">${h.date.slice(5)}</text>`; });
+  // 最新点标记
+  const li = hist.length - 1;
+  const lastColor = ZONE_COLOR[zoneOf(hist[li].temp)];
+  let dot = `<circle cx="${xs[li]}" cy="${y(hist[li].temp)}" r="4.5" fill="${lastColor}" stroke="#0b0f17" stroke-width="2"/>
+    <text x="${xs[li]-8}" y="${y(hist[li].temp)-10}" fill="${lastColor}" font-size="12" font-weight="700" text-anchor="end">${hist[li].temp}</text>`;
+  return card('情绪周期', `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">
+      ${bands}${gl}
+      <path d="${area}" fill="url(#gradLine)" opacity=".25"/>
+      <path d="${line}" fill="none" stroke="#4d9fff" stroke-width="2.2" stroke-linejoin="round"/>
+      ${dot}${xt}
+      <defs><linearGradient id="gradLine" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#4d9fff"/><stop offset="1" stop-color="#4d9fff" stop-opacity="0"/>
+      </linearGradient></defs>
+    </svg>
+    <div class="cycle-legend"><span>今日 <s style="background:${lastColor}"></s>${hist[li].temp}（${zoneOf(hist[li].temp)}）</span>
+    <span>周期律：冰点→回暖→高潮→退潮→冰点，拐点看连板高度与驱动力的共振</span></div>`,
+    `近${hist.length}个交易日`);
+}
+function zoneOf(t){ return t<=34?'冰点区':t<=47?'退潮区':t<=61?'震荡区':t<=74?'偏强区':'高热区'; }
+
+/* ---------- ③ 六因子 ---------- */
+function cardFactors(s) {
+  const W = {  // 权重展示（合计100%）
+    '上涨占比': 20, '涨跌停比': 20, '指数温度': 20, '涨停活跃度': 15, '情绪龙头': 15, '情绪驱动力': 10,
+  };
+  const notes = s.factor_notes || {};
+  const items = Object.entries(s.factors || {}).map(([k, v]) => `
+    <div class="frow"><span class="fname">${k} <i style="color:var(--faint);font-style:normal">${W[k]||''}%</i></span>
+      <div class="fbar"><i style="width:${Math.max(0, Math.min(100, +v))}%"></i></div>
+      <span class="fval">${(+v).toFixed(0)}</span></div>
+    ${notes[k] ? `<div style="grid-column:2/4;margin-top:-7px;font-size:11px;color:var(--faint)">${esc(notes[k])}</div>` : ''}`).join('');
+  const base = s.base_temp, delta = s.delta;
+  return card('情绪六因子', `<div class="factors">${items}</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--dim)">
+      基础温度 <b style="color:var(--txt)">${base}</b>
+      ${delta != null ? `· 今日较前日 <b style="color:${delta >= 0 ? 'var(--up)' : 'var(--down)'}">${delta > 0 ? '+' : ''}${delta}</b>` : '（前日数据缺失，驱动力取中性50）'}
+    </div>`);
+}
+
+/* ---------- ④ 板块轮动 ---------- */
+function cardSectors(sectors) {
+  const rows = (sectors.boards || []).slice(0, 12).map(b => {
+    const r = b.rank ?? '';
+    const top3 = (+r >= 1 && +r <= 3);
+    const pct = b["当日涨幅"] ?? b.pct_chg;
+    const tag = b.tag || '';
+    return `<tr><td><span class="rank-pill ${top3?'top3':''}">${r}</span></td>
+      <td>${esc(b.board)}</td>
+      <td class="num ${pctCls(pct)}">${fmtPct(pct)}</td>
+      <td class="num">${b.total != null ? (+b.total).toFixed(0) : '—'}</td>
+      <td>${tag === '进攻' ? '<span class="tag atk">进攻</span>' : ''}${tag === '防御' ? '<span class="tag def">防御</span>' : ''}</td>
+      <td style="color:var(--dim);font-size:12px">连板高${b.max_lianban ?? '—'} · 量能比${b["量能比raw"] ?? '—'} · 排名${b["排名趋势dir"] || '→'}</td></tr>`;
+  }).join('');
+  return card('板块轮动榜（六维度合成）', `
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>板块</th><th>涨幅</th><th>总分</th><th>攻/防</th><th>节奏</th></tr>${rows}
+    </table></div>`, `门槛前${(sectors.boards||[]).length} · 攻击${(sectors.attack||[]).length} 防御${(sectors.defend||[]).length}`);
+}
+
+/* ---------- ⑤ 候选池 Tabs ---------- */
+function cardPools(pools) {
+  const defs = [['精选','精选（三池交叉验证）'],['中线','中线 · 主升候选'],['短线','短线 · 打板+尾盘'],['长线','长线 · 观察关注']];
+  const tabs = defs.map(([k, lab], i) =>
+    `<div class="tab ${i===0?'on':''}" onclick="switchTab(this,'${k}')">${lab}<span class="n">${(pools[k]||[]).length}</span></div>`).join('');
+  const bodies = defs.map(([k]) => `<div class="tabbody" id="tab-${k}" style="display:${k==='精选'?'block':'none'}">${poolTable(pools[k]||[])}</div>`).join('');
+  return `<div class="card" style="padding:0 20px 14px">
+    <div class="tabs" style="margin:0 -20px 0">${tabs}</div>
+    <div class="pool-actions">点击行尾「+ 观察」将股票加入自选观察池（下次刷新生效）</div>
+    ${bodies}</div>`;
+}
+function switchTab(el, k) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('.tabbody').forEach(b => b.style.display = 'none');
+  $('#tab-' + k).style.display = 'block';
+}
+function poolTable(rows) {
+  if (!rows.length) return '<div class="empty" style="padding:34px">该池今日无股票入池</div>';
+  const trs = rows.map(r => {
+    const sc = r.score ?? r.zt_score;
+    const scColor = sc == null ? '#55627a' : sc >= 85 ? '#ff5d5d' : sc >= 70 ? '#e8b93e' : '#7d8ba1';
+    const brd = r.board_rank ? `板块#${r.board_rank}` : '';
+    return `<tr>
+      <td><b>${esc(r.name)}</b> <span class="wcode" style="font-size:11px">${r.code}</span></td>
+      <td class="num">${r.price != null ? (+r.price).toFixed(2) : '—'}</td>
+      <td class="num ${pctCls(r.pct_chg)}">${fmtPct(r.pct_chg)}</td>
+      <td>${sc != null ? `<span class="score-bar"><i style="width:${sc}%;background:${scColor}"></i></span><b style="color:${scColor}">${sc}</b>` : '—'}</td>
+      <td style="color:var(--dim);font-size:12px">${brd}</td>
+      <td style="color:var(--dim);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(r.laofan_sig || '')} ${esc((r.markers||[]).join(' '))}</td>
+      <td style="font-size:12px;color:#9db4d6;max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${esc(r.action||'')}">${esc(r.action || '')}</td>
+      <td><button class="btn sm" onclick="addWatch('${r.code}','${esc(r.name)}')">+ 观察</button></td></tr>`;
+  }).join('');
+  return `<div class="tbl-wrap"><table>
+    <tr><th>股票</th><th>现价</th><th>涨幅</th><th>评分</th><th>板块</th><th>信号</th><th>操作建议</th><th></th></tr>${trs}</table></div>`;
+}
+
+/* ---------- ⑥ 自选观察池 ---------- */
+function cardWatch() {
+  const has = (DATA.positions || []).length;
+  const addbar = `
+    <div class="addbar">
+      <input id="wCode" placeholder="代码 如 603019" maxlength="6" oninput="this.value=this.value.replace(/\\D/g,'')">
+      <input id="wName" placeholder="名称(可选)">
+      <select id="wMode"><option value="watching">关注（只出信号）</option><option value="positions">持仓（参与仓位建议）</option></select>
+      <button class="btn sm" onclick="addWatchManual()">＋ 添加</button>
+      <span style="color:var(--faint);font-size:12px">添加/移除后点「行情刷新」生效</span>
+    </div>`;
+  if (!has) return card('自选观察池', addbar + '<div class="empty" style="padding:36px">暂无自选股：在上方输入代码添加，或在候选池点「+ 观察」</div>');
+  const cards = (DATA.positions || []).map(p => watchCard(p)).join('');
+  return card('自选观察池', addbar + `<div class="watch-grid">${cards}</div>`, `${has} 只`);
+}
+
+function watchCard(p) {
+  const sigs = p.signals || [];
+  const sigHtml = sigs.length
+    ? sigs.map(s => `<div class="sigline ${s.direction==='买入'?'sig-BP':'sig-SP'}"><b>${s.type} ${esc(s.name||'')}</b>（置信${s.confidence}%）— ${esc(s.reason||'')}</div>`).join('')
+    : '<div class="sigline sig-none">今日无买卖点信号</div>';
+  const alerts = (p.sell_alerts || []).map(a =>
+    `<div class="al ${a.priority.toLowerCase()}"><b>${a.priority}</b>［${a.source}·${esc(a.signal)}］${esc(a.name)} → ${esc(a.action)}</div>`).join('');
+  const pnl = p.pnl_pct;
+  return `<div class="wcard">
+    <div class="left">
+      <div class="whead">
+        <span class="wname">${esc(p.name)}</span><span class="wcode">${p.code}</span>
+        <span class="state-pill st-${p.state}">${esc(p.state_cn || p.state)}</span>
+        ${p.cost != null ? `<span class="wcode">成本 ${p.cost} · 盈亏 <b class="${pctCls(pnl)}">${pnl != null ? fmtPct(pnl) : '—'}</b></span>` : ''}
+      </div>
+      <div class="kv">
+        <span>现价 <b>${p.price != null ? (+p.price).toFixed(2) : '—'}</b></span>
+        <span>趋势 <b>${esc(p.trend_cn || '—')}</b></span>
+        <span>BIAS60 <b class="${p.bias60 > 25 ? 'up' : p.bias60 < -25 ? 'down' : ''}">${p.bias60 != null ? (p.bias60 > 0 ? '+' : '') + p.bias60 + '%' : '—'}</b></span>
+        <span>距带上沿 <b>${p.dist_mid_upper != null ? fmtPct(p.dist_mid_upper) : '—'}</b></span>
+      </div>
+      ${sigHtml}
+      ${alerts ? `<div class="alerts">${alerts}</div>` : ''}
+      <div class="advice">${esc(p.advice || '')}</div>
+      <div style="margin-top:10px"><button class="btn sm danger" onclick="delWatch('${p.code}','${esc(p.name)}')">✕ 移除自选</button></div>
+    </div>
+    <div class="right">${klineSvg(p)}</div>
+  </div>`;
+}
+
+/* ---------- K线 SVG（均线带 + 信号点） ---------- */
+function klineSvg(p) {
+  const k = p.kline;
+  if (!k || !k.dates || !k.dates.length) return '<div class="kchart" style="height:240px;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px">K线数据缺失</div>';
+  const N = k.dates.length, W = 300, H = 240, PT = 8, PB = 30;
+  const iw = W, ih = H - PT - PB;
+  const his = k.k.map(r => r[3]), los = k.k.map(r => r[2]);
+  const lo = Math.min(...los), hi = Math.max(...his), pad = (hi - lo) * 0.04 || 1;
+  const y = v => PT + (hi + pad - v) / (hi - lo + 2 * pad) * ih;
+  const cw = iw / N;
+  let out = '';
+  // 中期带填充
+  const midU = k.mid_band.upper, midL = k.mid_band.lower, sU = k.short_band.upper, sL = k.short_band.lower;
+  const band = (up, dn, color) => {
+    if (!up || !dn) return '';
+    const top = up.map((v, i) => v == null ? null : `${i*cw+cw/2},${y(v)}`);
+    const bot = dn.map((v, i) => v == null ? null : `${(dn.length-1-i)*cw+cw/2},${y(dn[dn.length-1-i])}`).filter(x=>x);
+    const t = top.filter(x=>x);
+    if (!t.length || !bot.length) return '';
+    return `<path d="M${t.join(' L')} L${bot.join(' L')} Z" fill="${color}" opacity=".5"/>`;
+  };
+  out += band(midU, midL, '#2a3650');
+  out += band(sU, sL, '#1d4d7a');
+  // K线
+  k.k.forEach(([o, c, l, h], i) => {
+    const x = i * cw + cw / 2, up = c >= o, col = up ? '#3ecf8e' : '#ff5d5d';
+    const yo = y(o), yc = y(c), yh = y(h), yl = y(l);
+    const bw = Math.max(1.2, cw * 0.62);
+    out += `<line x1="${x}" y1="${yh}" x2="${x}" y2="${yl}" stroke="${col}" stroke-width="1"/>`;
+    const t = Math.min(yo, yc), hgt = Math.max(1, Math.abs(yc - yo));
+    out += `<rect x="${x-bw/2}" y="${t}" width="${bw}" height="${hgt}" fill="${up ? 'none' : col}" stroke="${col}" stroke-width="1" rx=".5"/>`;
+  });
+  // 信号标记
+  (p.signal_marks || []).forEach(m => {
+    const i = k.dates.indexOf(m.date);
+    if (i < 0) return;
+    const x = i * cw + cw / 2, v = y(m.price);
+    const isBuy = m.type.startsWith('BP');
+    out += `<circle cx="${x}" cy="${v}" r="5" fill="${isBuy?'#3ecf8e':'#ff5d5d'}" stroke="#0b0f17" stroke-width="1.5" opacity=".95"/>`;
+  });
+  // 末根日期
+  out += `<text x="${W-4}" y="${H-9}" fill="#55627a" font-size="10" text-anchor="end">${k.dates[N-1]} →</text>`;
+  out += `<text x="6" y="${H-9}" fill="#55627a" font-size="10">${k.dates[0]}</text>`;
+  // 图例
+  out += `<rect x="6" y="${PT+4}" width="14" height="7" fill="#2a3650"/><text x="24" y="${PT+11}" fill="#7d8ba1" font-size="9.5">中期带</text>`;
+  out += `<rect x="62" y="${PT+4}" width="14" height="7" fill="#1d4d7a"/><text x="80" y="${PT+11}" fill="#7d8ba1" font-size="9.5">短期带</text>`;
+  return `<div class="kchart" style="padding:6px 4px 0"><svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">${out}</svg></div>
+    <div style="font-size:11px;color:var(--faint);margin-top:6px">● 绿点=买点信号(BP) ● 红点=卖点信号(SP) · 近${N}根日K</div>`;
+}
+
+/* ---------- ⑦ 风险 ---------- */
+function cardRisk() {
+  const r = DATA.risks || {};
+  const miss = (r.missing || []).map(m => `<div class="risk-item">⚠ ${esc(m)}</div>`).join('');
+  const cool = (r.cooldown || []).map(m => `<div class="risk-item" style="border-left-color:#4d9fff;color:#8fb8e8">❄ ${esc(m)}</div>`).join('');
+  const disc = (r.discipline || []).map(m => `<div class="risk-item" style="border-left-color:#3ecf8e;color:#8fd8b4">§ ${esc(m)}</div>`).join('');
+  if (!miss && !cool && !disc) return '';
+  return card('风险提示 · 冷却拦截 · 纪律', miss + cool + disc);
+}
+
+/* ================================================================ 自选操作 */
+async function addWatch(code, name, mode) {
+  const r = await fetch('/api/watchlist', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code, name, mode: mode || 'watching'})}).then(r => r.json());
+  toast(r.msg || (r.ok ? '已添加' : '添加失败'), !r.ok);
+}
+async function addWatchManual() {
+  const code = $('#wCode').value.trim(), name = $('#wName').value.trim(), mode = $('#wMode').value;
+  if (code.length !== 6) { toast('请输入6位股票代码', true); return; }
+  await addWatch(code, name || code, mode);
+  if (WL) {}
+  $('#wCode').value = ''; $('#wName').value = '';
+}
+async function delWatch(code, name) {
+  if (!confirm(`确定移除 ${name}(${code})？`)) return;
+  const r = await fetch('/api/watchlist/remove', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code})}).then(r => r.json());
+  toast(r.msg, !r.ok);
+  if (r.ok) doRefresh();  // 移除后立即重算
+}
+
+boot();
+</script>
+</body>
+</html>

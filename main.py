@@ -163,55 +163,61 @@ def run(t0_signal: str = "none") -> Path:
         for _, r in fund_flow.iterrows():
             ff_map[str(r["board"])] = pd.to_numeric(r.get("main_net_pct"), errors="coerce")
 
-    # ========== 4. 主升候选池 ==========
-    spot = dp.get_spot()
-    spot_map = {}
-    if spot is not None and not spot.empty:
-        for _, r in spot.iterrows():
-            spot_map[str(r["code"]).zfill(6)] = r
+    # ========== 4. 主升候选池（板块优先：每个门槛板块内取成交额前N只，不扫全市场） ==========
+    cons_row_map: dict = {}   # code → 成分股行（替代全市场快照：价格/涨幅/换手板块接口自带）
+    for bd, cons in cons_map.items():
+        if cons is None or cons.empty:
+            continue
+        for _, r in cons.iterrows():
+            cons_row_map[str(r["code"]).zfill(6)] = r
 
     mid_rows: list[dict] = []
     long_rows: list[dict] = []
     if sector["gate_top_n"]:
+        per_board = int(cfg["run"].get("per_board_stock_limit", 4) or 4)
+        total_limit = int(cfg["run"].get("stock_score_universe_limit", 24) or 24)
         universe = []
         for bd in sector["gate_top_n"]:
             cons = cons_map.get(bd)
             if cons is None or cons.empty:
                 continue
+            rows = []
             for _, r in cons.iterrows():
                 code = str(r["code"]).zfill(6)
+                name = str(r.get("name", ""))
                 amt = pd.to_numeric(r.get("amount"), errors="coerce")
-                universe.append((code, str(r.get("name", "")), bd, 0.0 if pd.isna(amt) else float(amt)))
-        # 预筛：非ST、成交额≥5000万、当日上涨
-        def _up(c):
-            sp = spot_map.get(c)
-            if sp is None:
-                return False
-            p = pd.to_numeric(sp.get("pct_chg"), errors="coerce")
-            return (not pd.isna(p)) and p > 0
-        universe = [u for u in universe
-                    if "ST" not in u[1].upper() and u[3] >= 5e7 and _up(u[0])]
+                pct = pd.to_numeric(r.get("pct_chg"), errors="coerce")
+                # 预筛：非ST、成交额≥5000万、当日上涨
+                if "ST" in name.upper() or pd.isna(amt) or amt < 5e7 or pd.isna(pct) or pct <= 0:
+                    continue
+                rows.append((code, name, bd, float(amt)))
+            rows.sort(key=lambda u: -u[3])
+            universe.extend(rows[:per_board])
         universe.sort(key=lambda u: -u[3])
-        universe = universe[:int(cfg["run"].get("stock_score_universe_limit", 50) or 50)]
+        universe = universe[:total_limit]
         for code, name, bd, _ in universe:
             hist = get_hist(code)
-            sp = spot_map.get(code)
-            ff = dp.get_stock_fund_flow(code)
-            main_net_pct = None
-            if ff is not None and not ff.empty and "main_net_pct" in ff.columns:
-                v = pd.to_numeric(ff["main_net_pct"], errors="coerce").iloc[-1]
-                main_net_pct = None if pd.isna(v) else float(v)
+            crow = cons_row_map.get(code)
+            if hist is None or hist.empty:
+                continue
+            close_s = hist["close"].astype(float)
+            vol_s = hist["volume"].astype(float)
+            vr = None
+            if len(vol_s) >= 21:
+                ma20v = vol_s.rolling(20).mean().iloc[-2]
+                if ma20v and not pd.isna(ma20v) and ma20v > 0:
+                    vr = round(float(vol_s.iloc[-1] / ma20v), 2)
             res = score_stock(hist, {
                 "code": code, "name": name, "board": bd,
                 "board_rank": board_rank_map.get(bd),
                 "board_zt_count": len(zt_by_board.get(bd, [])),
                 "board_rank_in_stock": rank_in_board.get(code),
-                "main_net_pct": main_net_pct,
+                "main_net_pct": None,  # 轻量化：不再逐股拉资金流（板块资金流已在门槛中体现）
                 "sentiment_temp": sentiment["temperature"],
-                "spot_vr": None if sp is None else (None if pd.isna(sp.get("vr")) else float(sp.get("vr"))),
-                "turnover": None if sp is None else (None if pd.isna(sp.get("turnover")) else float(sp.get("turnover"))),
-                "pct_chg": None if sp is None else (None if pd.isna(sp.get("pct_chg")) else float(sp.get("pct_chg"))),
-                "price": None if sp is None else (None if pd.isna(sp.get("price")) else float(sp.get("price"))),
+                "spot_vr": vr,
+                "turnover": None if crow is None else (None if pd.isna(crow.get("turnover")) else float(crow.get("turnover"))),
+                "pct_chg": None if crow is None else (None if pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))),
+                "price": None if crow is None else (None if pd.isna(crow.get("price")) else float(crow.get("price"))),
             }, cfg)
             if res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
                 mid_rows.append(res)
@@ -236,10 +242,9 @@ def run(t0_signal: str = "none") -> Path:
             }
             ztres = score_limitup({**r.to_dict()}, get_hist(code), bctx, sentiment["temperature"], cfg)
             if ztres["in_pool"]:
-                sp = spot_map.get(code)
                 zt_rows.append({
-                    "code": code, "name": ztres["name"], "price": ztres.get("price") or (sp and sp.get("price")),
-                    "pct_chg": None if sp is None else sp.get("pct_chg"),
+                    "code": code, "name": ztres["name"], "price": ztres.get("price") or r.get("price"),
+                    "pct_chg": r.get("pct_chg"),
                     "score": ztres["score"], "zt_score": ztres["score"],
                     "board_rank": board_rank_map.get(bd), "markers": [f"{ztres['lian_ban']}连板"],
                     "laofan_sig": "", "action": f"打板观察（{ztres['dims'].get('板块协同_说明','')}）",
@@ -247,34 +252,45 @@ def run(t0_signal: str = "none") -> Path:
                 })
     zt_rows.sort(key=lambda x: -x["score"])
 
-    # ========== 6. 尾盘观察池 ==========
+    # ========== 6. 尾盘观察池（成分股涨幅粗筛 → 日K构造完整行情行） ==========
     eod_rows: list[dict] = []
-    if spot is not None and not spot.empty:
-        codes_checked = set()
-        for bd in sector["gate_top_n"]:
-            cons = cons_map.get(bd)
-            if cons is None or cons.empty:
+    codes_checked = set()
+    for bd in sector["gate_top_n"]:
+        cons = cons_map.get(bd)
+        if cons is None or cons.empty:
+            continue
+        for _, r in cons.iterrows():
+            code = str(r["code"]).zfill(6)
+            if code in codes_checked:
                 continue
-            for _, r in cons.iterrows():
-                code = str(r["code"]).zfill(6)
-                if code in codes_checked:
-                    continue
-                sp = spot_map.get(code)
-                if sp is None:
-                    continue
-                p = pd.to_numeric(sp.get("pct_chg"), errors="coerce")
-                if pd.isna(p) or not (3 <= p):
-                    continue
-                codes_checked.add(code)
-                res = check_eod({**sp.to_dict()}, get_hist(code), board_rank_map.get(bd), cfg)
-                if res["selected"]:
-                    eod_rows.append({
-                        "code": code, "name": res["name"], "price": res["price"],
-                        "pct_chg": res["pct_chg"], "score": None, "zt_score": None,
-                        "board_rank": res["board_rank"], "markers": [f"量比{res['vol_ratio']}"],
-                        "laofan_sig": "", "action": "尾盘关注（次日14:50-14:55执行）",
-                        "grade": "尾盘池", "discipline": res["discipline"],
-                    })
+            pct = pd.to_numeric(r.get("pct_chg"), errors="coerce")
+            if pd.isna(pct) or not (3 <= pct):
+                continue
+            codes_checked.add(code)
+            hist = get_hist(code)
+            if hist is None or len(hist) < 2:
+                continue
+            # 盘后运行：日K最后一根即今日行情，从中构造 check_eod 所需字段
+            last = hist.iloc[-1]
+            prev = hist.iloc[-2]
+            vol_ma5 = hist["volume"].astype(float).tail(6).head(5).mean()
+            vr = round(float(last["volume"] / vol_ma5), 2) if vol_ma5 and vol_ma5 > 0 else None
+            res = check_eod({
+                "code": code, "name": str(r.get("name", "")),
+                "price": float(last["close"]), "pct_chg": float(pct),
+                "open": float(last["open"]), "high": float(last["high"]), "low": float(last["low"]),
+                "volume": float(last["volume"]),
+                "amount": float(last["amount"]) if not pd.isna(last.get("amount")) else None,
+                "vr": vr, "pre_close": float(prev["close"]),
+            }, hist, board_rank_map.get(bd), cfg)
+            if res["selected"]:
+                eod_rows.append({
+                    "code": code, "name": res["name"], "price": res["price"],
+                    "pct_chg": res["pct_chg"], "score": None, "zt_score": None,
+                    "board_rank": res["board_rank"], "markers": [f"量比{res['vol_ratio']}"],
+                    "laofan_sig": "", "action": "尾盘关注（次日14:50-14:55执行）",
+                    "grade": "尾盘池", "discipline": res["discipline"],
+                })
     log.info("打板池 %d 只 · 尾盘池 %d 只", len(zt_rows), len(eod_rows))
 
     # ========== 7. 老樊引擎：自选持仓 + 候选池 ==========
@@ -325,8 +341,12 @@ def run(t0_signal: str = "none") -> Path:
                                         float(cfg["positions"]["max_single_position"]))
         # 融合：卖出双轨
         mid_res = next((r for r in mid_rows + long_rows if r["code"] == code), None)
-        sp = spot_map.get(code)
-        price = None if sp is None else (None if pd.isna(sp.get("price")) else float(sp.get("price")))
+        crow = cons_row_map.get(code)
+        price = None
+        if hist is not None and len(hist):
+            price = float(hist["close"].iloc[-1])   # 盘后运行：日K收盘即最新价
+        elif crow is not None and not pd.isna(crow.get("price")):
+            price = float(crow.get("price"))
         cost = next((p.get("cost") for p in wl["positions"] if str(p["code"]).zfill(6) == code and p.get("cost")), None)
         ma20 = float(hist["close"].astype(float).rolling(20).mean().iloc[-1]) if len(hist) >= 20 else None
         bias20 = None
@@ -466,6 +486,7 @@ def run(t0_signal: str = "none") -> Path:
     ctx = {
         "date": today_iso,
         "sentiment": sentiment,
+        "sentiment_history": _sentiment_history(cfg, today_iso, sentiment["temperature"]),
         "sectors": {"boards": sector["boards"], "attack": sector["attack_boards"],
                     "defend": sector["defend_boards"]},
         "pools": {"中线": mid_rows, "短线": zt_rows + eod_rows, "长线": long_rows, "精选": jx_rows},
@@ -476,7 +497,30 @@ def run(t0_signal: str = "none") -> Path:
     }
     out = BASE / cfg["run"]["output_dir"] / f"dashboard_{date_compact}.html"
     render_dashboard(ctx, out)
+    # 供本地 Web 应用读取（server.py /api/data）
+    result_json = BASE / cfg["run"]["data_dir"] / "last_result.json"
+    try:
+        result_json.write_text(json.dumps(ctx, ensure_ascii=False, default=str), encoding="utf-8")
+    except OSError as e:
+        log.warning("last_result.json 写入失败: %s", e)
     return out
+
+
+def _sentiment_history(cfg: dict, today_iso: str, today_temp: float) -> list[dict]:
+    """近60日情绪温度序列（情绪周期图表数据；今日已写入 CSV 后读回，含今日）。"""
+    f = BASE / cfg["run"]["data_dir"] / "sentiment_history.csv"
+    rows: list[dict] = []
+    try:
+        if f.exists():
+            h = pd.read_csv(f)
+            h = h.dropna(subset=["temperature"]).tail(60)
+            rows = [{"date": str(d)[:10], "temp": round(float(t), 1)}
+                    for d, t in zip(h["date"], h["temperature"])]
+    except (OSError, ValueError, KeyError) as e:
+        log.warning("情绪历史读取失败: %s", e)
+    if not rows or rows[-1]["date"] != today_iso:
+        rows.append({"date": today_iso, "temp": round(float(today_temp), 1)})
+    return rows
 
 
 def main() -> None:
