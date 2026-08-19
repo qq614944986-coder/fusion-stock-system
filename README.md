@@ -108,14 +108,15 @@ python backtest.py --code 603019 --days 250
 
 ## 6. 版本管理（GitHub）
 
-本项目已初始化为 git 仓库并关联 GitHub 远程仓库，日常版本管理全部交给 Trae 完成：
+本项目已初始化为 git 仓库，日常版本管理全部交给 Trae 完成：
 
 - **保存一个版本**：在 Trae 对话说「提交当前修改」，AI 自动生成规范的提交说明；
 - **查看历史**：说「查看最近的提交记录」；
 - **回退/对比**：说「对比我改了什么」「回到上一个版本」。
 
-本地不入库的内容（运行数据、缓存、日志、仪表盘）已在 `.gitignore` 中排除，
-只需管理代码和配置。`config/watchlist.yaml` 含个人持仓信息，**仓库请保持私有（Private）**。
+**隐私保护**：真实持仓文件 `config/watchlist.yaml` 已通过 `.gitignore` 排除在版本库之外
+（永不联网），GitHub 上只有代码和不含持仓的模板 `config/watchlist.yaml.example`。
+运行数据、缓存、日志、仪表盘同样不入库。仓库仍建议设为**私有（Private）**。
 
 ---
 
