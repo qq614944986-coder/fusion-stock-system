@@ -1,0 +1,20 @@
+# Python 运行产物
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 本机运行数据（缓存/持仓状态/复盘日志/仪表盘/运行日志，均自动生成）
+data/
+output/
+logs/
+
+# 个人持仓信息（防止误公开，不入库；模板见 config/watchlist.yaml.example）
+config/watchlist.yaml
+
+# 系统与编辑器
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/

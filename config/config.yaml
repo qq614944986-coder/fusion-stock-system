@@ -1,0 +1,92 @@
+# ========== 老樊引擎（精确校准，禁止改动默认值） ==========
+ma_band:
+  short_term: [5, 8, 13]          # 短期均线组（攻击带）
+  mid_term: [55, 60, 65]          # 中期均线组（生命线）
+  bias_ma_period: 60              # 乖离率均线周期
+  buy_bias_threshold: -25         # BP1 买入乖离阈值(%)
+  sell_bias_threshold: 25         # SP1 卖出乖离阈值(%)
+  band_tolerance_pct: 1.5         # 均线粘合阈值(%)
+  vol_ma_period: 20               # 成交量均线周期
+signals:
+  buy_point_1_cooldown: 20
+  buy_point_2_cooldown: 10
+  buy_point_3_cooldown: 10
+  sell_point_1_cooldown: 20
+  sell_point_2_cooldown: 5
+  sell_point_3_cooldown: 30
+  exit_cooldown: 15               # 离场后冷却期(天)
+filters:
+  breakout_volume_confirm: true   # BP2 放量确认
+  breakout_volume_ratio: 1.5
+  breakout_min_gain_pct: 2.0
+  breakout_confirm_bars: 2
+  breakdown_volume_confirm: false # SP3 放量确认（默认关闭）
+  breakdown_volume_ratio: 1.3
+  breakdown_min_loss_pct: 2.0
+  breakdown_confirm_bars: 1
+positions:
+  buy_point_1_position: 30        # BP1 建仓比例(%)
+  buy_point_2_position: 40        # BP2 加仓比例(%)
+  buy_point_3_position: 30        # BP3 满仓比例(%)
+  sell_point_1_reduce: 30
+  sell_point_2_reduce: 50
+  sell_point_3_reduce: 100
+  max_single_position: 30         # 单票最大仓位(%)
+  max_holdings: 5
+model_thresholds:
+  extreme_reversal: 40            # 极值反转触发分
+  pathfinder: 45                  # 探路尖兵
+  n_double_limitup: 50            # N式双涨停
+  whipsaw: 40                     # 搓揉线
+  shrink_volatility: 45           # 缩量缩波
+  island_reversal: 45             # 岛型反转
+signal_priority: [SP3, SP2, SP1, BP3, BP2, BP1]
+
+# ========== 李致远引擎（部分权重为推断值，可调） ==========
+sentiment:                        # 4.1 六因子权重
+  weight_rise_ratio: 0.20
+  weight_limit_ratio: 0.20
+  weight_index_temp: 0.20
+  weight_zt_quality: 0.15
+  weight_leader: 0.15
+  weight_momentum: 0.10
+  index_temp_range: 5             # 指数温度±5%映射区间
+zones:                            # 4.2 五区（分数边界+仓位上限）
+  - {name: 冰点区, min: 0,  max: 34, max_total: 20, max_single: 5,  max_count: 2}
+  - {name: 退潮区, min: 35, max: 47, max_total: 40, max_single: 10, max_count: 3}
+  - {name: 震荡区, min: 48, max: 61, max_total: 50, max_single: 12, max_count: 4}
+  - {name: 偏强区, min: 62, max: 74, max_total: 70, max_single: 15, max_count: 5}
+  - {name: 高热区, min: 75, max: 100, max_total: 50, max_single: 12, max_count: 4}
+sector:
+  top_n_gate: 10                  # 板块门槛：前10
+  volume_ratio_good: 1.5
+  turnover_healthy: [3, 15]
+stock_score:
+  pool_threshold: 70              # 主升入池
+  strong_threshold: 85            # 极强主升
+  watch_threshold: 55
+  overheat_bias_ma20: 19          # 短线过热标记
+limitup:
+  score_threshold: 60             # 打板入池
+  max_open_times: 1               # R4 相关
+  high_position_pct: 50           # R5 距20日低点
+eod:
+  gain_range: [3, 9.5]
+  volume_ratio_min: 1.2
+  sector_top_n: 10
+sell_rules:                       # 7.2 李致远卖出
+  stop_loss_short: -5
+  stop_loss_swing: -8
+  take_profit_short: 15
+  take_profit_swing: 30
+  score_drop_alert: 15
+  bias_ma20_take_profit: 30
+  sentiment_crash_drop: 10
+
+# ========== 运行 ==========
+run:
+  data_dir: data
+  output_dir: output
+  t0_signal: none                 # none | low_absorb | high_throw
+  sector_scan_limit: 30           # 运营参数：每日拉取成分股的板块数量上限（按当日涨幅排序取前N，控制API调用量；0=不限制）
+  hist_days: 300                  # 拉取日K的历史天数（需覆盖MA65+缓冲）

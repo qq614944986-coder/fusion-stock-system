@@ -1,0 +1,10 @@
+# 自选股配置模板（复制为本目录下的 watchlist.yaml 后填写真实持仓）
+# 复制方法：在本目录执行  copy watchlist.yaml.example watchlist.yaml
+positions:            # 持仓（参与老樊状态机）
+  - code: "600000"
+    name: "示例银行"
+    cost: 10.00       # 成本价（可留空）
+    shares: 100
+watching:             # 关注（只出信号不出仓位建议）
+  - code: "000001"
+    name: "示例平安"

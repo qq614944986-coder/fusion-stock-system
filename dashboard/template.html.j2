@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>双引擎选股择时仪表盘 {{ date }}</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --dim:#8b949e;
+          --up:#f85149; --down:#3fb950; --accent:#58a6ff; --warn:#d29922; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:"Microsoft YaHei",sans-serif; padding:16px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:14px; }
+  .zone-badge { display:inline-block; padding:3px 12px; border-radius:12px; font-weight:bold; margin-left:8px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .card h2 { font-size:15px; margin-bottom:10px; color:var(--accent); border-left:3px solid var(--accent); padding-left:8px; }
+  .chart { width:100%; height:300px; }
+  .chart-sm { width:100%; height:240px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { padding:5px 7px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; }
+  th { color:var(--dim); font-weight:normal; background:#1c2129; position:sticky; top:0; }
+  tr:hover td { background:#1c2129; }
+  .tbl-wrap { max-height:420px; overflow:auto; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:9px; font-size:11px; margin:1px; }
+  .tag-attack { background:#8b2f2f; } .tag-defend { background:#2f5d8b; }
+  .tag-risk { background:#6e4b0e; } .tag-ok { background:#1e4d2b; }
+  .num-up { color:var(--up); } .num-down { color:var(--down); }
+  pre.advice { white-space:pre-wrap; font-family:inherit; font-size:12px; background:#0d1117;
+               border:1px solid var(--border); border-radius:6px; padding:10px; line-height:1.7; }
+  .pos-head { display:flex; flex-wrap:wrap; gap:10px; font-size:13px; margin-bottom:8px; align-items:center; }
+  .state-pill { padding:2px 10px; border-radius:10px; font-weight:bold; }
+  .st-EMPTY{background:#333}.st-BUILDING{background:#1f6feb44}.st-HOLDING{background:#2ea04366}
+  .st-REDUCING{background:#d2992266}.st-EXITED{background:#f8514966}
+  .sig-BP{color:#3fb950;font-weight:bold}.sig-SP{color:#f85149;font-weight:bold}
+  .risk-item { padding:4px 0 4px 14px; border-left:2px solid var(--warn); margin:6px 0; font-size:12px; }
+  .factor-note { color:var(--dim); font-size:11px; }
+  .footer { color:var(--dim); font-size:11px; text-align:center; margin-top:10px; line-height:1.6; }
+  .p0{color:#f85149;font-weight:bold}.p1{color:#d29922;font-weight:bold}.p2{color:#58a6ff}
+</style>
+</head>
+<body>
+<h1>双引擎选股择时仪表盘 <span class="zone-badge" id="zoneBadge"></span></h1>
+<div class="sub" id="subLine"></div>
+
+<!-- ① 情绪温度表盘 -->
+<div class="grid2">
+  <div class="card"><h2>① 情绪温度表盘</h2><div id="gauge" class="chart"></div></div>
+  <div class="card"><h2>六因子雷达</h2><div id="radar" class="chart"></div>
+    <div id="zoneInfo" style="font-size:12px;line-height:1.8"></div></div>
+</div>
+
+<!-- ② 板块轮动榜 -->
+<div class="card"><h2>② 板块轮动榜（六维度）</h2>
+  <div class="tbl-wrap"><table id="sectorTbl"></table></div></div>
+
+<!-- ③ 候选池总览 -->
+<div class="card"><h2>③ 候选池总览（四维分组）</h2><div id="pools"></div></div>
+
+<!-- ④ 持仓监控 + ⑤ 信号日历 -->
+<div class="card"><h2>④ 持仓监控（老樊状态机 + 均线带 + 条件化建议）</h2><div id="positions"></div></div>
+<div class="card"><h2>⑤ 信号日历（近20日 BP/SP 触发点）</h2>
+  <div class="tbl-wrap"><table id="sigTbl"></table></div></div>
+
+<!-- ⑥ 风险提示 -->
+<div class="card"><h2>⑥ 风险提示</h2><div id="risks"></div></div>
+
+<div class="footer">本工具为信号提示辅助，不构成投资建议，最终决策需人工确认。<br>
+生成时间 {{ generated_at }}</div>
+
+<script>
+const D = {{ data_json }};
+const ZONE_COLORS = {"冰点区":"#58a6ff","退潮区":"#8957e5","震荡区":"#d29922","偏强区":"#3fb950","高热区":"#f85149"};
+const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const pct = v => v==null?"—":(v>0?"+":"")+Number(v).toFixed(2)+"%";
+const pctCls = v => v==null?"":(v>0?"num-up":v<0?"num-down":"");
+
+// ---------- 头部
+(function(){
+  const z = D.sentiment.zone;
+  const b = document.getElementById("zoneBadge");
+  b.textContent = z.name+" "+D.sentiment.temperature+"分 · "+z.label;
+  b.style.background = (ZONE_COLORS[z.name]||"#333")+"33";
+  b.style.color = ZONE_COLORS[z.name]||"#ccc";
+  document.getElementById("subLine").textContent =
+    `总仓位上限 ≤${z.max_total}% · 单票上限 ≤${z.max_single}% · 持仓数 ≤${z.max_count}只 · 纪律：${z.rule}`;
+})();
+
+// ---------- ① 表盘 + 雷达
+(function(){
+  const g = echarts.init(document.getElementById("gauge"));
+  g.setOption({
+    series:[{ type:"gauge", min:0, max:100, splitNumber:5,
+      axisLine:{ lineStyle:{ width:18, color:[[0.34,'#58a6ff'],[0.47,'#8957e5'],[0.61,'#d29922'],[0.74,'#3fb950'],[1,'#f85149']] } },
+      pointer:{ itemStyle:{ color:"#c9d1d9" } },
+      axisLabel:{ color:"#8b949e" },
+      detail:{ formatter:'{value}', color:"#c9d1d9", fontSize:36, offsetCenter:[0,'65%'] },
+      title:{ offsetCenter:[0,'95%'], color:"#8b949e", fontSize:12 },
+      data:[{ value:D.sentiment.temperature, name:"情绪温度（0-100）" }] }]
+  });
+  const r = echarts.init(document.getElementById("radar"));
+  const f = D.sentiment.factors;
+  r.setOption({
+    radar:{ indicator:Object.keys(f).map(k=>({name:k, max:100})), radius:"65%",
+      axisName:{ color:"#c9d1d9", fontSize:11 }, splitArea:{ areaStyle:{ color:["#161b22","#1c2129"] } } },
+    series:[{ type:"radar", data:[{ value:Object.values(f), name:"今日六因子" }],
+      areaStyle:{ opacity:0.3 } }]
+  });
+  const notes = D.sentiment.factor_notes||{};
+  document.getElementById("zoneInfo").innerHTML =
+    Object.entries(f).map(([k,v])=>`${k}：<b>${v}</b> <span class="factor-note">${esc(notes[k]||"")}</span>`).join("<br>") +
+    `<br>基础温度 ${D.sentiment.base_temp} · 较前日 ${D.sentiment.delta==null?"—[数据缺失]":(D.sentiment.delta>0?"+":"")+D.sentiment.delta}`;
+})();
+
+// ---------- ② 板块榜
+(function(){
+  const dims = ["连板节奏","上攻意愿","主买占比","换手率","量能比","排名趋势"];
+  let h = "<tr><th>#</th><th>板块</th><th>总分</th>" + dims.map(d=>`<th>${d}</th>`).join("") +
+          "<th>量能比(实)</th><th>排名趋势</th><th>攻防</th></tr>";
+  D.sectors.boards.forEach(b=>{
+    const tag = b.tag==="进攻"?'<span class="tag tag-attack">进攻</span>':b.tag==="防御"?'<span class="tag tag-defend">防御</span>':"";
+    h += `<tr><td>${b.rank}</td><td>${esc(b.board)}</td><td><b>${b.total}</b></td>` +
+      dims.map(d=>`<td>${b.dims[d]==null?"—":b.dims[d]}</td>`).join("") +
+      `<td>${b["量能比raw"]==null?"—":b["量能比raw"]}</td><td>${b["排名趋势dir"]}</td><td>${tag}</td></tr>`;
+  });
+  document.getElementById("sectorTbl").innerHTML = h;
+})();
+
+// ---------- ③ 候选池
+(function(){
+  const cols = ["代码","名称","现价","涨幅","主升评分","打板评分","板块排名","标记","老樊信号","建议动作"];
+  function tbl(rows){
+    if(!rows || !rows.length) return "<div class='factor-note'>（空）</div>";
+    let h = "<tr>"+cols.map(c=>`<th>${c}</th>`).join("")+"</tr>";
+    rows.forEach(r=>{
+      h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.price??"—"}</td>
+        <td class="${pctCls(r.pct_chg)}">${pct(r.pct_chg)}</td>
+        <td><b>${r.score??"—"}</b>${r.grade?` <span class="factor-note">${esc(r.grade)}</span>`:""}</td>
+        <td>${r.zt_score??"—"}</td><td>${r.board_rank?("#"+r.board_rank):"—"}</td>
+        <td>${(r.markers||[]).map(m=>`<span class="tag tag-risk">${esc(m)}</span>`).join("")}</td>
+        <td class="${r.laofan_sig?"sig-BP":""}">${esc(r.laofan_sig||"—")}</td>
+        <td>${esc(r.action||"—")}</td></tr>`;
+    });
+    return `<div class="tbl-wrap"><table>${h}</table></div>`;
+  }
+  const P = D.pools;
+  document.getElementById("pools").innerHTML =
+    `<h3 style="font-size:13px;color:#3fb950;margin:8px 0">中线（主升评分≥70，5-20天）</h3>${tbl(P.中线)}` +
+    `<h3 style="font-size:13px;color:#d29922;margin:8px 0">短线（打板池+尾盘池，1-3天）</h3>${tbl(P.短线)}` +
+    `<h3 style="font-size:13px;color:#58a6ff;margin:8px 0">长线（主升评分≥60，20天+，基本面人工补充）</h3>${tbl(P.长线)}` +
+    `<h3 style="font-size:13px;color:#8957e5;margin:8px 0">精选（各维度Top3交叉验证）</h3>${tbl(P.精选)}` +
+    (D.eod && D.eod.length ? `<h3 style="font-size:13px;color:#c9d1d9;margin:8px 0">尾盘观察池（次日关注）</h3>${tbl(D.eod)}` +
+      `<div class="factor-note">尾盘纪律：${(D.eod[0].discipline||[]).join("；")}</div>` : "");
+})();
+
+// ---------- ④⑤ 持仓卡片 + K线双带 + 信号日历
+const sigRows = [];
+function renderPosition(idx, p, isHolding){
+  const div = document.createElement("div");
+  div.className = "card";
+  const st = p.state_cn||"空仓";
+  div.innerHTML = `<div class="pos-head">
+    <b style="font-size:15px">${esc(p.name)} ${p.code}</b>
+    <span class="state-pill st-${p.state||"EMPTY"}">${st}</span>
+    <span>仓位 ${p.position_pct??0}%</span>
+    ${p.cost?`<span>成本 ${p.cost} · 盈亏 <span class="${pctCls(p.pnl_pct)}">${pct(p.pnl_pct)}</span></span>`:""}
+    <span>BIAS60 <b>${p.bias60==null?"—":p.bias60+"%"}</b>（${esc(p.bias_zone||"—")}）</span>
+    <span>${esc(p.trend_cn||"")}</span>
+    <span>距中期带上沿 ${p.dist_mid_upper==null?"—":(p.dist_mid_upper>0?"+":"")+p.dist_mid_upper+"%"}</span>
+  </div><div id="k${idx}" class="chart-sm"></div>
+  <div style="font-size:12px;margin:6px 0">当前信号：${
+    (p.signals&&p.signals.length)?p.signals.map(s=>`<span class="sig-${s.type[0]==='B'?'BP':'SP'}">${s.type} ${esc(s.name)}（置信${s.confidence}%，${esc(s.position_action)}）</span>`).join(" · "):"<span class='factor-note'>无</span>"}
+  </div>
+  ${(p.sell_alerts&&p.sell_alerts.length)?`<div style="font-size:12px;margin:6px 0">卖出监控：${
+    p.sell_alerts.map(a=>`<span class="${a.priority.toLowerCase()}">[${a.priority}|${a.source}|${esc(a.signal)}] ${esc(a.name)} → ${esc(a.action)}</span>`).join("<br>")}</div>`:""}
+  ${p.t0?`<div style="font-size:12px;margin:6px 0">T0协同：${esc(p.t0.action)}（置信${p.t0.confidence}%）— ${esc(p.t0.note)}</div>`:""}
+  <pre class="advice">${esc(p.advice||"")}</pre>`;
+  document.getElementById(isHolding?"positions":"positions").appendChild(div);
+
+  // K线 + 双带 + BIAS60 副图
+  const kl = p.kline;
+  if(!kl || !kl.dates || !kl.dates.length) return;
+  const chart = echarts.init(document.getElementById("k"+idx));
+  const N = kl.dates.length;
+  const maSeries = Object.entries(kl.ma||{}).map(([k,v])=>({
+    name:k, type:"line", data:v, symbol:"none",
+    lineStyle:{ width: /5|8|13/.test(k)?1.2:1.6, opacity:.9 },
+    itemStyle:{ color: /5|8|13/.test(k)? "#e0913f":"#58a6ff" },
+    emphasis:{ disabled:true }
+  }));
+  const band = (b,color,stack)=>{
+    const lower = (b.lower||[]).map(x=>x==null?null:+(+x).toFixed(3));
+    const upper = (b.upper||[]).map(x=>x==null?null:+(+x).toFixed(3));
+    const span = lower.map((x,i)=> (x==null||upper[i]==null)?null:+(upper[i]-x).toFixed(3));
+    return [
+      { name:"带下沿"+stack, type:"line", data:lower, stack:stack, symbol:"none",
+        lineStyle:{opacity:0}, emphasis:{ disabled:true }, silent:true },
+      { name:"带上沿"+stack, type:"line", data:span, stack:stack, symbol:"none",
+        lineStyle:{opacity:0}, areaStyle:{color:color}, emphasis:{ disabled:true }, silent:true }
+    ];
+  };
+  const marks = (p.signal_marks||[]).map(m=>({
+    coord:[m.date, m.price], value:m.name, symbol:"pin", symbolSize:38,
+    itemStyle:{ color: m.type[0]==="B"?"#3fb950":"#f85149" },
+    label:{ color:"#fff", fontSize:10 }
+  }));
+  chart.setOption({
+    tooltip:{ trigger:"axis", axisPointer:{type:"cross"} },
+    legend:{ data:["MA5","MA8","MA13","MA55","MA60","MA65"], textStyle:{color:"#8b949e",fontSize:10}, top:0 },
+    grid:[{left:56,right:16,top:26,height:"55%"},{left:56,right:16,top:"72%",height:"20%"}],
+    xAxis:[{type:"category",data:kl.dates,gridIndex:0},
+           {type:"category",data:kl.dates,gridIndex:1,axisLabel:{show:false}}],
+    yAxis:[{scale:true,gridIndex:0,splitLine:{lineStyle:{color:"#21262d"}}},
+           {gridIndex:1,splitLine:{lineStyle:{color:"#21262d"}},
+            axisLabel:{formatter:v=>v+"%"}}],
+    dataZoom:[{type:"inside",xAxisIndex:[0,1],start:Math.max(0,100-120/N*100),end:100}],
+    series:[
+      { name:"K线", type:"candlestick", data:kl.k.map(x=>[x[0],x[1],x[2],x[3]]),
+        itemStyle:{ color:"#f85149", color0:"#3fb950", borderColor:"#f85149", borderColor0:"#3fb950" },
+        markPoint:{ data:marks } },
+      ...band(kl.short_band,"rgba(224,145,63,0.12)","s1"),
+      ...band(kl.mid_band,"rgba(88,166,255,0.15)","m1"),
+      ...maSeries,
+      { name:"BIAS60", type:"line", data:(kl.bias60||[]).map(x=>x==null?null:+(+x).toFixed(2)),
+        xAxisIndex:1, yAxisIndex:1, symbol:"none", lineStyle:{color:"#d29922",width:1.2},
+        markLine:{ silent:true, symbol:"none", lineStyle:{type:"dashed",color:"#8b949e"},
+          label:{formatter:"{c}%"}, data:[{yAxis:25},{yAxis:-25}] } }
+    ]
+  });
+}
+(D.positions||[]).forEach((p,i)=>{
+  renderPosition(i,p,true);
+  // 信号日历行
+  (p.signal_marks||[]).forEach(m=>sigRows.push({date:m.date,code:p.code,name:p.name,type:m.type,price:m.price}));
+  (p.signals||[]).forEach(s=>{
+    if(s.is_today) sigRows.unshift({date:D.date,code:p.code,name:p.name,type:s.type,price:p.price});
+  });
+});
+sigRows.sort((a,b)=>a.date<b.date?1:-1);
+(function(){
+  const rows = sigRows.slice(0,20);
+  let h = "<tr><th>日期</th><th>代码</th><th>名称</th><th>信号</th><th>价格</th></tr>";
+  rows.forEach(r=>{ h += `<tr><td>${r.date}</td><td>${r.code}</td><td>${esc(r.name)}</td>
+    <td class="${r.type[0]==='B'?'sig-BP':'sig-SP'}">${r.type}</td><td>${r.price??"—"}</td></tr>`; });
+  document.getElementById("sigTbl").innerHTML = h || "<tr><td>近20日无信号记录</td></tr>";
+})();
+
+// ---------- ⑥ 风险提示
+(function(){
+  const R = D.risks||{};
+  let h = "";
+  (R.missing||[]).forEach(m=>h+=`<div class="risk-item">[数据缺失] ${esc(m)}</div>`);
+  (R.cooldown||[]).forEach(m=>h+=`<div class="risk-item">[冷却期/拦截] ${esc(m)}</div>`);
+  (R.discipline||[]).forEach(m=>h+=`<div class="risk-item">[纪律] ${esc(m)}</div>`);
+  if(!h) h = "<div class='factor-note'>今日无数据缺失与拦截提示</div>";
+  document.getElementById("risks").innerHTML = h;
+})();
+window.addEventListener("resize",()=>{document.querySelectorAll(".chart,.chart-sm").forEach(el=>{
+  const c=echarts.getInstanceByDom(el); if(c)c.resize();});});
+</script>
+</body>
+</html>
