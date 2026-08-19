@@ -8,6 +8,8 @@ rem Logs: logs\run_YYYYMMDD_HHMMSS.log (+ last_success.log / last_error.log)
 
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
+rem Domestic market data sites bypass the proxy (direct connection is faster and more stable)
+set NO_PROXY=localhost,127.0.0.1,eastmoney.com,sina.com.cn,xueqiu.com,10jqka.com.cn,csindex.com.cn
 set SILENT=%1
 
 if not exist logs mkdir logs

@@ -11,6 +11,7 @@ import json
 import logging
 import pickle
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -119,26 +120,50 @@ class DataProvider:
             log.warning("缓存写入失败 %s: %s", key, e)
 
     def _fetch(self, key: str, fetch_fn: Callable[[], Any], fmt: str = "pkl") -> Optional[Any]:
-        """缓存优先；接口失败 → None + missing 记录（降级，不阻塞）。"""
+        """缓存优先；接口失败 → None + missing 记录（降级，不阻塞）。
+
+        防风控：真实网络请求之间保持最小间隔（默认 0.5 秒），
+        失败后间隔 3 秒重试一次（东财 WAF 对高频连接会临时断连）。
+        """
         hit = self._cached(key, fmt)
         if hit is not None:
             return hit
-        try:
-            obj = fetch_fn()
-            if obj is None:
-                raise ValueError("接口返回 None")
-            if isinstance(obj, pd.DataFrame) and obj.empty:
-                raise ValueError("接口返回空表")
-            if isinstance(obj, dict) and not obj:
-                raise ValueError("接口返回空字典")
-            self._save(key, fmt, obj)
-            return obj
-        except Exception as e:
-            msg = f"[数据缺失] {key}: {type(e).__name__}: {e}"
-            if msg not in self.missing:
-                self.missing.append(msg)
-            log.warning(msg)
-            return None
+        for attempt in (1, 2):
+            self._throttle()
+            try:
+                obj = fetch_fn()
+                if obj is None:
+                    raise ValueError("接口返回 None")
+                if isinstance(obj, pd.DataFrame) and obj.empty:
+                    raise ValueError("接口返回空表")
+                if isinstance(obj, dict) and not obj:
+                    raise ValueError("接口返回空字典")
+                self._save(key, fmt, obj)
+                return obj
+            except Exception as e:
+                if attempt == 1:
+                    log.warning("第1次失败 %s: %s，3秒后重试", key, type(e).__name__)
+                    time.sleep(3)
+                    continue
+                msg = f"[数据缺失] {key}: {type(e).__name__}: {e}"
+                if msg not in self.missing:
+                    self.missing.append(msg)
+                log.warning(msg)
+                return None
+        return None
+
+    # ---------------- 请求节流（防数据源风控）
+
+    _MIN_REQUEST_GAP = 0.5   # 两次真实网络请求的最小间隔（秒）
+    _last_request_ts: float = 0.0
+
+    @classmethod
+    def _throttle(cls) -> None:
+        now = time.monotonic()
+        wait = cls._MIN_REQUEST_GAP - (now - cls._last_request_ts)
+        if wait > 0:
+            time.sleep(wait)
+        cls._last_request_ts = time.monotonic()
 
     # ---------------- 个股日K（前复权）
 
