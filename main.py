@@ -11,21 +11,25 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
-from core.data_provider import DataProvider, load_config, load_watchlist, index_symbol_map
+from core.data_provider import DataProvider, load_config, load_watchlist, index_symbol_map, is_main_board
 from core.sentiment_engine import compute_sentiment
 from core.sector_screener import screen_sectors
 from core.stock_scorer import score_stock
-from core.limitup_scorer import score_limitup, board_ladder_count
+from core.limitup_scorer import score_limitup, board_ladder_count, LIMITUP_DISCIPLINE
 from core.eod_watchlist import check_eod
 from core.ma_band_v2 import MABandV2
-from core.laofan_signals import LaofanSignalEngine, SIGNAL_CN, STATE_CN
+from core.laofan_signals import LaofanSignalEngine, Signal, StockState
 from core.laofan_models import LaofanModels
 from core.position_manager import PositionManager
+from core.macro_view import build_macro
+from core.pool_review import PoolReview, POOLS
 from core import fusion_engine as fe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -47,6 +51,57 @@ def render_dashboard(ctx: dict, out_path: Path) -> None:
     log.info("仪表盘已生成: %s", out_path)
 
 
+# ---------------------------------------------------------------- S级冲高形态判定
+
+def _s_grade_check(res: dict, hist: Optional[pd.DataFrame], close_s) -> tuple[bool, str]:
+    """S级冲高优先形态（用户需求 + 老樊强势模型近似）。
+
+    判定：评分≥85 且 命中以下强势形态之一（主板已在上游过滤）：
+    - N式双涨停近似：近5日≥2个涨幅>9.5%的交易日；
+    - 突破形态近似：收盘创20日新高 且 量比≥1.5；
+    - 极值反转近似：BIAS60≤-25% 且回升（当日上涨）。
+    """
+    score = res.get("score") or 0
+    if score < 85:
+        return False, ""
+    if hist is None or len(hist) < 21:
+        return False, ""
+    try:
+        pct5 = pd.to_numeric(hist["pct_chg"], errors="coerce").tail(5)
+        zt_days = int((pct5 > 9.5).sum())
+        if zt_days >= 2:
+            return True, f"N式双涨停（近5日{zt_days}个涨停级涨幅）"
+        if float(close_s.iloc[-1]) >= float(close_s.tail(20).max()):
+            vr = res.get("spot_vr")
+            if vr is not None and vr >= 1.5:
+                return True, "突破20日新高且放量"
+        b60 = res.get("bias60")
+        if b60 is not None and b60 <= -25 and (res.get("pct_chg") or 0) > 0:
+            return True, "极值反转（深乖离回升）"
+    except (KeyError, TypeError, ValueError):
+        return False, ""
+    return False, ""
+
+
+def _enrich_review_rows(rows: list[dict]) -> list[dict]:
+    """复盘记录附加状态总结文案（用户需求：股票状态总结/是否高开低走）。"""
+    out: list[dict] = []
+    for r in rows:
+        r = dict(r)
+        nd = r.get("next_day")
+        if nd:
+            verdict = "收红" if nd["close_ret"] > 0 else "收绿"
+            parts = [f"次日{verdict}", f"开盘{nd['open_ret']:+.1f}%",
+                     f"最高{nd['high_ret']:+.1f}%", f"收盘{nd['close_ret']:+.1f}%"]
+            if nd["open_ret"] > 0 and nd["close_ret"] < nd["open_ret"]:
+                parts.append("高开低走")
+            r["status_summary"] = "，".join(parts)
+        else:
+            r["status_summary"] = "在池观察中（次日数据待回填）"
+        out.append(r)
+    return out
+
+
 # ---------------------------------------------------------------- 主流程
 
 def run(t0_signal: str = "none") -> Path:
@@ -62,6 +117,11 @@ def run(t0_signal: str = "none") -> Path:
     band_eng = MABandV2(cfg)
     sig_eng = LaofanSignalEngine(cfg)
     models = LaofanModels(cfg)
+    prv = PoolReview(BASE, cfg["run"]["data_dir"])
+
+    # ========== 1. 宏观大盘（指数组 + 两市量能 + 外围日韩） ==========
+    macro = build_macro(dp, index_symbol_map())
+    log.info("宏观：%s", macro["summary"])
 
     # ========== 2. 情绪温度 ==========
     act = dp.get_market_activity() or {}
@@ -99,6 +159,26 @@ def run(t0_signal: str = "none") -> Path:
     }, cfg, prev_base)
     zone = sentiment["zone"]
     log.info("情绪温度 %.1f → %s（%s）", sentiment["temperature"], zone["name"], zone["label"])
+
+    # 情绪龙头具体化（用户需求：日级情绪龙头=名称+连板数）
+    sentiment["leader_stock"] = None
+    if zt_pool is not None and not zt_pool.empty and "lian_ban" in zt_pool.columns:
+        try:
+            zp = zt_pool.copy()
+            zp["lian_ban"] = pd.to_numeric(zp["lian_ban"], errors="coerce").fillna(1).astype(int)
+            top = zp.sort_values("lian_ban", ascending=False).iloc[0]
+            sentiment["leader_stock"] = {
+                "name": str(top.get("name", "")), "code": str(top.get("code", "")).zfill(6),
+                "lian_ban": int(top["lian_ban"]),
+            }
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    # 涨跌家数 / 涨停跌停（用户需求：实时涨跌家数比、涨停跌停数——盘后为收盘终值）
+    sentiment["breadth_rt"] = {
+        "rise": _act_int("上涨"), "fall": _act_int("下跌"),
+        "limit_up": _act_int("涨停"), "limit_down": _act_int("跌停"),
+    }
 
     # 追加情绪历史
     if sent_hist_file.exists():
@@ -163,7 +243,7 @@ def run(t0_signal: str = "none") -> Path:
         for _, r in fund_flow.iterrows():
             ff_map[str(r["board"])] = pd.to_numeric(r.get("main_net_pct"), errors="coerce")
 
-    # ========== 4. 主升候选池（板块优先：每个门槛板块内取成交额前N只，不扫全市场） ==========
+    # ========== 4. 三线候选池（板块优先 + 主板过滤 + S级冲高形态判定） ==========
     cons_row_map: dict = {}   # code → 成分股行（替代全市场快照：价格/涨幅/换手板块接口自带）
     for bd, cons in cons_map.items():
         if cons is None or cons.empty:
@@ -171,8 +251,9 @@ def run(t0_signal: str = "none") -> Path:
         for _, r in cons.iterrows():
             cons_row_map[str(r["code"]).zfill(6)] = r
 
-    mid_rows: list[dict] = []
-    long_rows: list[dict] = []
+    mid_rows: list[dict] = []     # 中线：主升确认（≥70 且过板块门槛）
+    long_rows: list[dict] = []    # 长线：观察区（60-69）
+    short_rows: list[dict] = []   # 短线：S级冲高优先形态（≥85 + 强势形态，进短线观察池）
     if sector["gate_top_n"]:
         per_board = int(cfg["run"].get("per_board_stock_limit", 4) or 4)
         total_limit = int(cfg["run"].get("stock_score_universe_limit", 24) or 24)
@@ -187,14 +268,23 @@ def run(t0_signal: str = "none") -> Path:
                 name = str(r.get("name", ""))
                 amt = pd.to_numeric(r.get("amount"), errors="coerce")
                 pct = pd.to_numeric(r.get("pct_chg"), errors="coerce")
-                # 预筛：非ST、成交额≥5000万、当日上涨
+                # 预筛：非ST、成交额≥5000万、当日上涨、主板（用户合规约束）
                 if "ST" in name.upper() or pd.isna(amt) or amt < 5e7 or pd.isna(pct) or pct <= 0:
+                    continue
+                if not is_main_board(code):
                     continue
                 rows.append((code, name, bd, float(amt)))
             rows.sort(key=lambda u: -u[3])
             universe.extend(rows[:per_board])
         universe.sort(key=lambda u: -u[3])
         universe = universe[:total_limit]
+        # 入选股主力净流入（轻量化恢复：仅对最终候选拉取，≤24次调用）
+        main_net_map: dict = {}
+        for code, _, _, _ in universe:
+            ff = dp.get_stock_fund_flow(code)
+            if ff is not None and not ff.empty and "main_net_pct" in ff.columns:
+                v = pd.to_numeric(ff["main_net_pct"], errors="coerce").iloc[-1]
+                main_net_map[code] = None if pd.isna(v) else float(v)
         for code, name, bd, _ in universe:
             hist = get_hist(code)
             crow = cons_row_map.get(code)
@@ -212,20 +302,106 @@ def run(t0_signal: str = "none") -> Path:
                 "board_rank": board_rank_map.get(bd),
                 "board_zt_count": len(zt_by_board.get(bd, [])),
                 "board_rank_in_stock": rank_in_board.get(code),
-                "main_net_pct": None,  # 轻量化：不再逐股拉资金流（板块资金流已在门槛中体现）
+                "main_net_pct": main_net_map.get(code),
                 "sentiment_temp": sentiment["temperature"],
                 "spot_vr": vr,
                 "turnover": None if crow is None else (None if pd.isna(crow.get("turnover")) else float(crow.get("turnover"))),
                 "pct_chg": None if crow is None else (None if pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))),
                 "price": None if crow is None else (None if pd.isna(crow.get("price")) else float(crow.get("price"))),
             }, cfg)
-            if res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
+            # 附加展示字段（用户需求：主力流入强度/换手/乖离/涨跌概率倾向）
+            res["main_net_pct"] = main_net_map.get(code)
+            res["price"] = float(close_s.iloc[-1])
+            res["pct_chg"] = None if crow is None or pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))
+            res["turnover"] = None if crow is None or pd.isna(crow.get("turnover")) else float(crow.get("turnover"))
+            res["bias20"] = None
+            res["bias60"] = None
+            if len(close_s) >= 60:
+                ma60 = close_s.rolling(60).mean().iloc[-1]
+                res["bias60"] = round(float((close_s.iloc[-1] - ma60) / ma60 * 100), 1)
+            if len(close_s) >= 20:
+                ma20 = close_s.rolling(20).mean().iloc[-1]
+                res["bias20"] = round(float((close_s.iloc[-1] - ma20) / ma20 * 100), 1)
+            # S级冲高形态判定（用户需求：S级进短线候选池）
+            s_grade, s_reason = _s_grade_check(res, hist, close_s)
+            res["s_grade"] = s_grade
+            res["s_reason"] = s_reason
+            if s_grade:
+                short_rows.append(res)
+            elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
                 mid_rows.append(res)
             elif res["score"] >= 60:
                 long_rows.append(res)
     mid_rows.sort(key=lambda x: -x["score"])
     long_rows.sort(key=lambda x: -x["score"])
-    log.info("主升候选池 %d 只（≥70 且板块门槛过）", len(mid_rows))
+    short_rows.sort(key=lambda x: -x["score"])
+    # 三线各取前5（用户需求：宁缺毋滥，不足5只如实显示）
+    mid_rows = mid_rows[:5]
+    long_rows = long_rows[:5]
+    short_rows = short_rows[:5]
+    log.info("三线池：短线S级 %d / 中线 %d / 长线 %d", len(short_rows), len(mid_rows), len(long_rows))
+
+    # ========== 4.5 观察池复盘闭环（入选→次日验证→去弱留强→滚动统计） ==========
+    # 池内仍在观察的代码补拉日K（历史入选可能不在今日候选宇宙内）
+    pool_active_codes = {rec["code"] for p in POOLS for rec in prv.data[p]
+                         if not rec.get("removed_reason")}
+    for code in pool_active_codes:
+        get_hist(code)
+    hist_map = {c: h for c, h in hist_cache.items() if h is not None and not h.empty}
+
+    # 上一交易日（从上证指数日K推导，盘后运行时最后一根=今日）
+    prev_trade_day = ""
+    sh_idx = dp.get_index_daily(index_symbol_map()["上证指数"])
+    if sh_idx is not None and len(sh_idx):
+        past = [str(d)[:10] for d in sh_idx["date"] if str(d)[:10] < today_iso]
+        if past:
+            prev_trade_day = past[-1]
+
+    # 1) 次日表现回填（对 added_date < today 且未回填的记录）
+    backfilled = prv.backfill(hist_map, today_iso)
+    # 2) 去弱留强（短线破MA5 / 中线评分滑坡或破MA20 / 长线破中期带下沿）
+    band_map: dict = {}
+    for rec in prv.data["长线"]:
+        h = hist_map.get(rec["code"])
+        if h is not None and len(h) >= 66:
+            try:
+                band_map[rec["code"]] = band_eng.compute(h)
+            except (KeyError, ValueError, TypeError):
+                pass
+    score_map = {r["code"]: r["score"] for r in mid_rows + long_rows}
+    removed_log = prv.prune(hist_map, band_map=band_map, score_map=score_map, today_iso=today_iso)
+    # 3) 今日新入选（入选价=当日收盘）
+    prv.append("短线", [{
+        "code": r["code"], "name": r["name"], "score": r["score"],
+        "add_price": float(hist_map[r["code"]]["close"].iloc[-1]) if r["code"] in hist_map else None,
+        "reason": f"S级冲高形态：{r.get('s_reason', '')}",
+        "model": r.get("grade", ""),
+    } for r in short_rows], today_iso)
+    prv.append("中线", [{
+        "code": r["code"], "name": r["name"], "score": r["score"],
+        "add_price": float(hist_map[r["code"]]["close"].iloc[-1]) if r["code"] in hist_map else None,
+        "reason": f"主升确认（评分{r['score']:.0f}·板块#{r.get('board_rank') or '—'}）",
+        "model": r.get("grade", ""),
+    } for r in mid_rows], today_iso)
+    prv.append("长线", [{
+        "code": r["code"], "name": r["name"], "score": r["score"],
+        "add_price": float(hist_map[r["code"]]["close"].iloc[-1]) if r["code"] in hist_map else None,
+        "reason": f"观察区（评分{r['score']:.0f}，等主升确认升级）",
+        "model": r.get("grade", ""),
+    } for r in long_rows], today_iso)
+    prv.save()
+
+    # 4) 滚动统计（次日胜率/平均开盘收盘/平均最高收益；样本<10 显示"—"）
+    prv_stats = prv.stats()
+    review_payload = {
+        "stats": prv_stats,
+        "yesterday_date": prev_trade_day,
+        "yesterday": {p: _enrich_review_rows(prv.yesterday_top(p, prev_trade_day)) for p in POOLS},
+        "active": {p: _enrich_review_rows(prv.active(p)) for p in POOLS},
+        "removed": removed_log,
+        "backfilled": backfilled,
+    }
+    log.info("观察池复盘：回填 %d 条 · 删除 %d 条", backfilled, len(removed_log))
 
     # ========== 5. 打板观察池 ==========
     zb_pool = dp.get_zb_pool()
@@ -242,13 +418,24 @@ def run(t0_signal: str = "none") -> Path:
             }
             ztres = score_limitup({**r.to_dict()}, get_hist(code), bctx, sentiment["temperature"], cfg)
             if ztres["in_pool"]:
+                # 近5日涨幅（打板评分展示用）
+                pct5 = None
+                _h = get_hist(code)
+                if _h is not None and len(_h):
+                    pct5 = round(float(pd.to_numeric(_h["pct_chg"], errors="coerce").tail(5).sum()), 1)
                 zt_rows.append({
-                    "code": code, "name": ztres["name"], "price": ztres.get("price") or r.get("price"),
+                    "code": code, "name": ztres["name"], "price": r.get("price"),
                     "pct_chg": r.get("pct_chg"),
                     "score": ztres["score"], "zt_score": ztres["score"],
                     "board_rank": board_rank_map.get(bd), "markers": [f"{ztres['lian_ban']}连板"],
-                    "laofan_sig": "", "action": f"打板观察（{ztres['dims'].get('板块协同_说明','')}）",
+                    "laofan_sig": "", "action": f"打板观察（{ztres['dims'].get('板块协同_说明', '')}）",
                     "grade": f"打板{ztres['score']}分",
+                    # 打板明细（用户需求：量能/换手/主力净额/近5日涨幅/板块共振）
+                    "lian_ban": ztres["lian_ban"], "first_seal_time": ztres["first_seal_time"],
+                    "open_times": ztres["open_times"], "vr": ztres["vr"],
+                    "turnover": ztres["turnover"], "main_net_pct": ztres["main_net_pct"],
+                    "pct5": pct5, "board": bd,
+                    "board_zt_count": bctx["board_zt_count"], "board_ladder": bctx["board_ladder"],
                 })
     zt_rows.sort(key=lambda x: -x["score"])
 
@@ -297,7 +484,7 @@ def run(t0_signal: str = "none") -> Path:
     pm.refresh_all(sig_eng, today_iso)
     position_codes = [str(p["code"]).zfill(6) for p in wl["positions"]]
     watching_codes = [str(w["code"]).zfill(6) for w in wl["watching"]]
-    candidate_codes = [r["code"] for r in mid_rows[:10]]
+    candidate_codes = [r["code"] for r in (short_rows + mid_rows + long_rows)[:10]]
     all_codes = list(dict.fromkeys(position_codes + watching_codes + candidate_codes))
 
     pos_payload: list[dict] = []
@@ -340,7 +527,7 @@ def run(t0_signal: str = "none") -> Path:
             pos_info = fe.fuse_position(today_sigs[0].action_pct, zone,
                                         float(cfg["positions"]["max_single_position"]))
         # 融合：卖出双轨
-        mid_res = next((r for r in mid_rows + long_rows if r["code"] == code), None)
+        mid_res = next((r for r in short_rows + mid_rows + long_rows if r["code"] == code), None)
         crow = cons_row_map.get(code)
         price = None
         if hist is not None and len(hist):
@@ -436,31 +623,60 @@ def run(t0_signal: str = "none") -> Path:
         advice_map[code] = advice
         pos_payload.append(entry)
 
-    # ========== 8. 融合输出：候选池建议表 ==========
-    for r in mid_rows:
-        r["laofan_sig"] = ""
-        r["action"] = "入池观察（等老樊买点）"
-        lf_entry = next((e for e in pos_payload if e["code"] == r["code"]), None)
-        if lf_entry:
-            sigs = lf_entry.get("signals") or []
-            if sigs:
-                fb = fe.fuse_buy(zone["name"], sigs[0]["type"])
-                r["laofan_sig"] = f"{sigs[0]['type']}(置信{sigs[0]['confidence']}%)"
-                r["action"] = f"{fb['action']}：{fb['note']}"
-            else:
-                r["laofan_sig"] = "无信号"
+    # ========== 8. 融合输出：三线候选池建议表 ==========
+    default_actions = {
+        "短线": "S级冲高形态：次日冲高兑现为主（收盘破MA5离场）",
+        "中线": "入池观察（等老樊买点）",
+        "长线": "观察区（等主升确认后升级中线）",
+    }
+    for pool_name, pool_rows in (("短线", short_rows), ("中线", mid_rows), ("长线", long_rows)):
+        for r in pool_rows:
+            r["laofan_sig"] = ""
+            r["action"] = default_actions[pool_name]
+            if pool_name == "短线" and r.get("s_reason"):
+                r["action"] += f"〔{r['s_reason']}〕"
+            lf_entry = next((e for e in pos_payload if e["code"] == r["code"]), None)
+            if lf_entry:
+                sigs = lf_entry.get("signals") or []
+                if sigs:
+                    fb = fe.fuse_buy(zone["name"], sigs[0]["type"])
+                    r["laofan_sig"] = f"{sigs[0]['type']}(置信{sigs[0]['confidence']}%)"
+                    r["action"] = f"{fb['action']}：{fb['note']}"
+                else:
+                    r["laofan_sig"] = "无信号"
 
-    # 精选：各维度 Top3 交叉验证
-    top3_mid = [r["code"] for r in mid_rows[:3]]
-    top3_zt = [r["code"] for r in zt_rows[:3]]
-    top3_eod = [r["code"] for r in eod_rows[:3]]
-    from collections import Counter
-    cross = Counter(top3_mid + top3_zt + top3_eod)
-    picked = [c for c, n in cross.items() if n >= 2] or top3_mid[:3]
+    # 三池Top3交叉验证精选：短线S级/中线主升/长线观察 各取Top3，
+    # 叠加打板/尾盘两个协同源 —— 同一股票被≥2个源同时选中才算"交叉验证精选"
+    #（三线池按评分分层互斥，但S级形态股常同时命中打板池、主升股常同时命中尾盘池，交叉由此产生）
+    src_lists = (("短线S级", short_rows), ("中线主升", mid_rows), ("长线观察", long_rows),
+                 ("打板", zt_rows), ("尾盘", eod_rows))
+    src_map: dict = {}
+    for lbl, rows in src_lists:
+        for r in rows:
+            src_map.setdefault(r["code"], []).append(lbl)
+    top3_codes = [r["code"] for _, rows in src_lists for r in rows[:3]]
+    cross = Counter(top3_codes)
+    picked = [c for c, n in cross.items() if n >= 2]
+    if not picked:
+        # 无交叉命中 → 按情绪区间回退单池Top3（冰点/退潮埋伏长线，偏强/高热做短线，中间态做中线）
+        fb = short_rows if zone["name"] in ("偏强区", "高热区") else \
+            (long_rows if zone["name"] in ("冰点区", "退潮区") else mid_rows)
+        picked = [r["code"] for r in fb[:3]]
     picked_set = set(picked)
-    jx_rows = [r for r in (mid_rows + zt_rows + eod_rows) if r["code"] in picked_set]
+    jx_rows: list[dict] = []
     seen = set()
-    jx_rows = [r for r in jx_rows if not (r["code"] in seen or seen.add(r["code"]))]
+    for _, rows in src_lists:
+        for r in rows:
+            c = r["code"]
+            if c in picked_set and c not in seen:
+                seen.add(c)
+                row = dict(r)
+                row["cross_src"] = "+".join(src_map.get(c, []))
+                row["cross_n"] = len(src_map.get(c, []))
+                jx_rows.append(row)
+    jx_rows.sort(key=lambda x: (-x.get("cross_n", 0), -(x.get("score") or 0)))
+    log.info("三池交叉验证精选 %d 只：%s", len(jx_rows),
+             "、".join(f"{r['name']}×{r['cross_n']}" for r in jx_rows) or "无")
 
     # ========== 复盘日志（9.1 信号触发记录） ==========
     review_file = BASE / cfg["run"]["data_dir"] / "review_log.csv"
@@ -470,7 +686,7 @@ def run(t0_signal: str = "none") -> Path:
             rdf = pd.concat([pd.read_csv(review_file, dtype={"code": str}), rdf], ignore_index=True)
         rdf.to_csv(review_file, index=False, encoding="utf-8-sig")
     # 评分峰值记录（供 7.2 信号卖出用）
-    pm.record_scores(today_iso, {**{r["code"]: r["score"] for r in mid_rows + long_rows}})
+    pm.record_scores(today_iso, {**{r["code"]: r["score"] for r in short_rows + mid_rows + long_rows}})
     pm.save()
 
     # ========== 9. 渲染 ==========
@@ -483,13 +699,44 @@ def run(t0_signal: str = "none") -> Path:
     if eod_rows:
         discipline.append("尾盘纪律：" + "；".join(eod_rows[0].get("discipline", [])))
 
+    # ========== 8.5 总结决策与操作建议（用户需求：使用者第一眼先看这段） ==========
+    delta_txt = "—" if sentiment.get("delta") is None else f"{sentiment['delta']:+.1f}分"
+    leader = sentiment.get("leader_stock") or {}
+    summary_lines = [
+        f"① 市场环境：{macro['summary']}",
+        f"② 情绪周期：{sentiment['temperature']:.0f}分（{zone['name']}·{zone['label']}），较前日{delta_txt}"
+        + (f"；情绪龙头 {leader.get('name','')}({leader.get('lian_ban','')}连板)" if leader else ""),
+        f"③ 仓位纪律：总仓位≤{zone['max_total']}%，单票≤{zone['max_single']}%，持仓≤{zone['max_count']}只"
+        + ("；高热区禁开新仓" if zone["name"] == "高热区" else ""),
+    ]
+    if sector["ambush"]["attack"]:
+        a = sector["ambush"]["attack"][0]
+        summary_lines.append(f"④ 板块埋伏：进攻 {a['board']}（{a['basis']}）→ {a['action']}")
+    elif sector["ambush"]["defend"]:
+        d = sector["ambush"]["defend"][0]
+        summary_lines.append(f"④ 板块防守：{d['board']}（{d['basis']}）→ {d['action']}")
+    else:
+        summary_lines.append(f"④ 板块埋伏：{sector['ambush']['watch']}")
+    jx_names = "、".join(f"{r['name']}({r['code']})×{r['cross_n']}源"
+                         for r in jx_rows[:3]) or "今日无交叉验证精选"
+    summary_lines.append(f"⑤ 三池精选：{jx_names}")
+    summary_lines.append(f"⑥ 打板纪律：{LIMITUP_DISCIPLINE[1]}")
+    n_miss = len(dp.missing + sentiment["missing"] + sector["missing"])
+    if n_miss:
+        summary_lines.append(f"⑦ 数据缺失 {n_miss} 项（详见风险区标注，不影响其他模块）")
+
     ctx = {
         "date": today_iso,
+        "summary": summary_lines,
+        "macro": macro,
         "sentiment": sentiment,
         "sentiment_history": _sentiment_history(cfg, today_iso, sentiment["temperature"]),
         "sectors": {"boards": sector["boards"], "attack": sector["attack_boards"],
-                    "defend": sector["defend_boards"]},
-        "pools": {"中线": mid_rows, "短线": zt_rows + eod_rows, "长线": long_rows, "精选": jx_rows},
+                    "defend": sector["defend_boards"], "ambush": sector["ambush"]},
+        "pools": {"短线": short_rows, "中线": mid_rows, "长线": long_rows,
+                  "打板": zt_rows, "尾盘": eod_rows, "精选": jx_rows},
+        "pool_review": review_payload,
+        "limitup_discipline": LIMITUP_DISCIPLINE,
         "eod": eod_rows,
         "positions": pos_payload,
         "risks": {"missing": dp.missing + sentiment["missing"] + sector["missing"],

@@ -161,7 +161,18 @@ def screen_sectors(boards: Optional[pd.DataFrame],
             "换手率": turnover, "量能比": vr,
             "当日涨幅": float(pd.to_numeric(r.get("pct_chg"), errors="coerce") or 0.0),
             "max_lianban": max_lianban, "stock_count": 0 if cons is None else len(cons),
+            # 展示层附加（用户需求：上涨广度/领涨股/主力净流入）
+            "up_count": int(pd.to_numeric(r.get("up_count"), errors="coerce") or 0),
+            "down_count": int(pd.to_numeric(r.get("down_count"), errors="coerce") or 0),
+            "leader_stock": str(r.get("leader_stock") or ""),
+            "main_net_inflow_yi": None if main_pct is None else None,
         }
+        # 上涨广度 = 上涨家数/(上涨+下跌家数)
+        upc, dwc = raw[bd]["up_count"], raw[bd]["down_count"]
+        raw[bd]["breadth"] = round(upc / (upc + dwc) * 100, 1) if (upc + dwc) > 0 else None
+        mni = ff_map.get(bd, {}).get("main_net_inflow")
+        if mni is not None and not pd.isna(mni):
+            raw[bd]["main_net_inflow_yi"] = round(float(mni) / 1e8, 2)
 
     # 前一日板块涨幅排名（来自板块指数历史倒数第2根）
     prev_pct: dict = {}
@@ -202,6 +213,9 @@ def screen_sectors(boards: Optional[pd.DataFrame],
             "当日涨幅": round(raw[bd]["当日涨幅"], 2),
             "换手率raw": None if raw[bd]["换手率"] is None else round(raw[bd]["换手率"], 2),
             "max_lianban": raw[bd]["max_lianban"], "stock_count": raw[bd]["stock_count"],
+            "up_count": raw[bd]["up_count"], "down_count": raw[bd]["down_count"],
+            "breadth": raw[bd]["breadth"], "leader_stock": raw[bd]["leader_stock"],
+            "main_net_inflow_yi": raw[bd]["main_net_inflow_yi"],
         })
     rows.sort(key=lambda x: -x["total"])
     for i, row in enumerate(rows):
@@ -228,8 +242,43 @@ def screen_sectors(boards: Optional[pd.DataFrame],
         else:
             r["tag"] = ""
 
+    # 埋伏建议文案（用户需求：进攻/防守板块的埋伏建议，由主力流入+广度+涨幅构成）
+    ambush_attack = _ambush_advice(
+        [r for r in rows if r["board"] in attack_boards], "进攻")
+    ambush_defend = _ambush_advice(
+        [r for r in rows if r["board"] in defend_boards], "防御")
+    if not ambush_attack and not ambush_defend:
+        # 情绪不匹配时退化为门槛前3的客观描述（不给交易建议，只给观察建议）
+        top3 = rows[:3]
+        ambush_watch = "当前情绪区间无进攻/防守标签板块，仅观察门槛前3：" + \
+            "；".join(f"{r['board']}(#{r['rank']}，涨幅{r['当日涨幅']:+.1f}%)" for r in top3)
+    else:
+        ambush_watch = ""
+
     return {
         "boards": rows, "stock_board_map": stock_board_map,
         "gate_top_n": gate_top_n, "attack_boards": attack_boards,
         "defend_boards": defend_boards, "missing": missing,
+        "ambush": {"attack": ambush_attack, "defend": ambush_defend, "watch": ambush_watch},
     }
+
+
+def _ambush_advice(boards: list[dict], kind: str) -> list[dict]:
+    """生成板块埋伏建议：依据=主力流入 + 上涨广度 + 当日涨幅 + 领涨股。"""
+    out: list[dict] = []
+    for r in boards[:3]:   # 每类最多3个
+        parts = []
+        if r.get("main_net_inflow_yi") is not None:
+            parts.append(f"主力净流入{r['main_net_inflow_yi']:+.1f}亿")
+        if r.get("breadth") is not None:
+            parts.append(f"上涨广度{r['breadth']:.0f}%")
+        parts.append(f"当日{r['当日涨幅']:+.1f}%")
+        if r.get("leader_stock"):
+            parts.append(f"领涨{r['leader_stock']}")
+        if kind == "进攻":
+            action = "可埋伏板块内低位补涨股（勿追高领涨股）"
+        else:
+            action = "防守配置：低吸为主，破板块均线离场"
+        out.append({"board": r["board"], "rank": r["rank"], "basis": "，".join(parts),
+                    "action": action})
+    return out

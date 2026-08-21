@@ -66,8 +66,10 @@ class TestDashboard(unittest.TestCase):
         self.assertTrue(self.out.exists() and self.out.stat().st_size > 1000)
 
     def test_six_panels_present(self):
-        for panel in ["① 情绪温度表盘", "② 板块轮动榜", "③ 候选池总览",
-                      "④ 持仓监控", "⑤ 信号日历", "⑥ 风险提示"]:
+        """面板齐全（UI重排后：总结置顶 + 宏观 + 情绪 + 板块 + 三线总揽 + 复盘 + 打板 + 持仓 + 日历 + 风险）。"""
+        for panel in ["⓪ 总结决策与操作建议", "① 宏观大盘", "② 情绪周期走势", "③ 板块埋伏建议",
+                      "④ 短中长线评分总揽", "⑤ 观察池复盘", "⑥ 打板筛选",
+                      "⑦ 持仓监控", "⑧ 信号日历", "⑨ 风险提示"]:
             self.assertIn(panel, self.html)
 
     def test_kline_dual_band_rendering(self):

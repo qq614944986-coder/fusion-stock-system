@@ -33,6 +33,15 @@ def _akshare():
     return _ak
 
 
+def _to_f(v) -> "float | None":
+    """宽松转 float（None/异常 → None）。"""
+    try:
+        f = float(str(v).replace(",", "").replace("%", "").strip())
+        return None if f != f else f  # NaN 检查
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------- 配置加载
 
 def load_config(path: Optional[Path] = None) -> dict:
@@ -70,12 +79,20 @@ def market_of(code: str) -> str:
 
 
 def index_symbol_map() -> dict:
-    """指数温度所需三大指数（4.1：上证/创业板/科创50）。"""
+    """指数温度+宏观大盘所需指数（4.1：上证/创业板/科创50；宏观：另加深成/沪深300）。"""
     return {
         "上证指数": "sh000001",
+        "深证成指": "sz399001",
         "创业板指": "sz399006",
+        "沪深300": "sh000300",
         "科创50": "sh000688",
     }
+
+
+def is_main_board(code: str) -> bool:
+    """主板判定（用户约束：只做主板 60/00 开头，剔除创业30/科创68/北交8、4）。"""
+    code = str(code).zfill(6)
+    return code[:2] in ("60", "00")
 
 
 # ---------------------------------------------------------------- 数据提供者
@@ -165,6 +182,26 @@ class DataProvider:
             time.sleep(wait)
         cls._last_request_ts = time.monotonic()
 
+    def _fetch_no_missing(self, key: str, fetch_fn: Callable[[], Any], fmt: str = "pkl") -> Optional[Any]:
+        """_fetch 的静默变体：失败不记 missing（供降级链第一级使用）。"""
+        hit = self._cached(key, fmt)
+        if hit is not None:
+            return hit
+        for attempt in (1, 2):
+            self._throttle()
+            try:
+                obj = fetch_fn()
+                if obj is None or (isinstance(obj, pd.DataFrame) and obj.empty):
+                    raise ValueError("空数据")
+                self._save(key, fmt, obj)
+                return obj
+            except Exception:
+                if attempt == 1:
+                    time.sleep(3)
+                    continue
+                return None
+        return None
+
     # ---------------- 个股日K（前复权）
 
     def get_stock_daily(self, code: str, days: Optional[int] = None) -> Optional[pd.DataFrame]:
@@ -238,10 +275,24 @@ class DataProvider:
 
         return self._fetch("market_activity", _do, "json")
 
-    # ---------------- 指数日K
+    # ---------------- 指数日K（东财版，含成交额）
 
     def get_index_daily(self, symbol: str) -> Optional[pd.DataFrame]:
-        def _do() -> pd.DataFrame:
+        """东财指数日K（含 amount 成交额，供两市量能计算）。失败时降级新浪版。"""
+        def _do_em() -> pd.DataFrame:
+            ak = _akshare()
+            df = ak.stock_zh_index_daily_em(symbol=symbol)
+            df = df.rename(columns={"date": "date", "open": "open", "close": "close",
+                                    "high": "high", "low": "low", "volume": "volume", "amount": "amount"})
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.tail(10).reset_index(drop=True)
+            for c in ["open", "close", "high", "low", "volume", "amount"]:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+            keep = [c for c in ["date", "open", "close", "high", "low", "volume", "amount"] if c in df.columns]
+            return df[keep]
+
+        def _do_sina() -> pd.DataFrame:  # 降级：新浪版（无 amount）
             ak = _akshare()
             df = ak.stock_zh_index_daily(symbol=symbol)
             df = df.rename(columns={"date": "date", "open": "open", "close": "close",
@@ -253,7 +304,37 @@ class DataProvider:
                     df[c] = pd.to_numeric(df[c], errors="coerce")
             return df
 
-        return self._fetch(f"index_{symbol}", _do, "pkl")
+        # 东财版失败（含重试）→ 新浪版兜底
+        res = self._fetch_no_missing(f"index_em_{symbol}", _do_em, "pkl")
+        if res is not None:
+            return res
+        return self._fetch(f"index_{symbol}", _do_sina, "pkl")
+
+    # ---------------- 外围指数（日经225 / 韩国KOSPI）
+
+    def get_global_indices(self) -> Optional[pd.DataFrame]:
+        """全球主要指数快照（东财），提取日经225、韩国KOSPI。失败降级返回 None。"""
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            df = ak.index_global_spot_em()
+            name_col = next((c for c in df.columns if "名称" in str(c)), None)
+            price_col = next((c for c in df.columns if "最新" in str(c)), None)
+            pct_col = next((c for c in df.columns if "涨跌幅" in str(c)), None)
+            if not all([name_col, price_col, pct_col]):
+                raise ValueError("外围指数列名不符")
+            kw = {"日经": "日经225", "韩": "韩国KOSPI"}
+            rows = []
+            for _, r in df.iterrows():
+                nm = str(r[name_col])
+                for k, cn in kw.items():
+                    if k in nm:
+                        rows.append({"name": cn, "price": _to_f(r[price_col]),
+                                     "pct_chg": _to_f(r[pct_col])})
+            if not rows:
+                raise ValueError("未找到日经/KOSPI")
+            return pd.DataFrame(rows)
+
+        return self._fetch("global_indices", _do, "pkl")
 
     # ---------------- 行业板块列表（名称+当日涨幅+换手率）
 

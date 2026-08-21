@@ -68,8 +68,15 @@ stock_score:
   overheat_bias_ma20: 19          # 短线过热标记
 limitup:
   score_threshold: 60             # 打板入池
-  max_open_times: 1               # R4 相关
-  high_position_pct: 50           # R5 距20日低点
+  max_open_times: 1               # 炸板≥2次排除
+  high_position_pct: 50           # 距20日低点涨幅上限
+  main_board_only: true           # 只看主板（用户合规约束：仅60/00开头）
+  max_lianban: 3                  # 最多三板（首半优先，高位接力排除）
+  turnover_range: [2, 25]         # 换手率健康区间%（下限防无量，上限防极端分歧）
+  min_amount: 200000000           # 成交额下限（2亿，流动性门槛）
+  max_volume_ratio: 5.0           # 量比上限（量能过度失控排除）
+  require_main_inflow: true       # 主力净流入必须>0
+  isolated_penalty: 15            # 孤立涨停降级扣分（不排除，保留独立走强通道）
 eod:
   gain_range: [3, 9.5]
   volume_ratio_min: 1.2
