@@ -40,6 +40,42 @@ def _num(v) -> Optional[float]:
         return None
 
 
+def precheck_exclude(row: dict, cfg: dict) -> Optional[str]:
+    """涨停池预筛（纯行字段硬排除，无需日K）——供 main.py 在拉取日K前剪枝，
+    避免对注定出局的股票（非主板/连板>3/换手越界/成交额不足等）浪费请求。
+
+    仅覆盖 R1/R3/R4/R6/R7/R8/R9（不依赖 hist 的规则）；
+    R2/R5/R10/R11 等仍由 score_limitup 完整判定（预筛只是提前剪枝，非最终守门）。
+    """
+    lcfg = cfg["limitup"]
+    name = str(row.get("name", ""))
+    code = str(row.get("code", "")).zfill(6)
+    if "ST" in name.upper():                                    # R1
+        return "R1: ST"
+    fst = str(row.get("first_seal_time", "") or "")
+    ot = int(_num(row.get("open_times")) or 0)
+    if fst.replace(":", "").startswith(("0925", "925")) and ot == 0:   # R3
+        return "R3: 一字板"
+    if ot > int(lcfg["max_open_times"]):                        # R4a
+        return f"R4: 炸板{ot}次"
+    pct = _num(row.get("pct_chg"))
+    if pct is not None and pct < 9.8:                           # R4b
+        return "R4: 收盘未封住"
+    if lcfg.get("main_board_only") and not is_main_board(code):        # R6
+        return "R6: 非主板"
+    lb = int(_num(row.get("lian_ban")) or 1)
+    if lb > int(lcfg["max_lianban"]):                           # R7
+        return f"R7: {lb}连板"
+    t_over = _num(row.get("turnover"))                          # R8
+    t_lo, t_hi = float(lcfg["turnover_range"][0]), float(lcfg["turnover_range"][1])
+    if t_over is not None and not (t_lo <= t_over <= t_hi):
+        return "R8: 换手越界"
+    amt = _num(row.get("amount"))                               # R9
+    if amt is not None and amt < float(lcfg["min_amount"]):
+        return "R9: 成交额不足"
+    return None
+
+
 def score_limitup(row: dict, hist: Optional[pd.DataFrame], board_ctx: dict,
                   sentiment_temp: Optional[float], cfg: dict) -> dict:
     """row：涨停池单行（code/name/lian_ban/open_times/first_seal_time/price/amount/

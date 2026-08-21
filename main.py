@@ -25,7 +25,7 @@ from core.stock_scorer import score_stock
 from core.limitup_scorer import score_limitup, board_ladder_count, LIMITUP_DISCIPLINE
 from core.eod_watchlist import check_eod
 from core.ma_band_v2 import MABandV2
-from core.laofan_signals import LaofanSignalEngine, Signal, StockState
+from core.laofan_signals import LaofanSignalEngine, Signal, StockState, STATE_CN
 from core.laofan_models import LaofanModels
 from core.position_manager import PositionManager
 from core.macro_view import build_macro
@@ -254,10 +254,10 @@ def run(t0_signal: str = "none") -> Path:
     mid_rows: list[dict] = []     # 中线：主升确认（≥70 且过板块门槛）
     long_rows: list[dict] = []    # 长线：观察区（60-69）
     short_rows: list[dict] = []   # 短线：S级冲高优先形态（≥85 + 强势形态，进短线观察池）
+    per_board = int(cfg["run"].get("per_board_stock_limit", 4) or 4)
+    total_limit = int(cfg["run"].get("stock_score_universe_limit", 24) or 24)
+    universe: list = []
     if sector["gate_top_n"]:
-        per_board = int(cfg["run"].get("per_board_stock_limit", 4) or 4)
-        total_limit = int(cfg["run"].get("stock_score_universe_limit", 24) or 24)
-        universe = []
         for bd in sector["gate_top_n"]:
             cons = cons_map.get(bd)
             if cons is None or cons.empty:
@@ -278,60 +278,84 @@ def run(t0_signal: str = "none") -> Path:
             universe.extend(rows[:per_board])
         universe.sort(key=lambda u: -u[3])
         universe = universe[:total_limit]
-        # 入选股主力净流入（轻量化恢复：仅对最终候选拉取，≤24次调用）
-        main_net_map: dict = {}
+
+    # 兜底宇宙：成分股接口全挂（东财push2被封等）时用全市场快照构建
+    # （主板+非ST+当日上涨+成交额≥5000万，按成交额排序取前N；板块字段缺失→中线门槛降级，短线/长线照常）
+    if not universe:
+        spot = dp.get_spot()
+        if spot is not None and not spot.empty:
+            for _, r in spot.iterrows():
+                code = str(r["code"]).zfill(6)
+                name = str(r.get("name", ""))
+                amt = pd.to_numeric(r.get("amount"), errors="coerce")
+                pct = pd.to_numeric(r.get("pct_chg"), errors="coerce")
+                if "ST" in name.upper() or pd.isna(amt) or amt < 5e7 or pd.isna(pct) or pct <= 0:
+                    continue
+                if not is_main_board(code):
+                    continue
+                universe.append((code, name, None, float(amt)))
+            universe.sort(key=lambda u: -u[3])
+            universe = universe[:total_limit]
+            log.info("候选宇宙走快照兜底：%d 只（成分股接口不可用）", len(universe))
+
+    # 主力净流入：全市场批量一次拉取（腾讯快照/同花顺资金流，替代逐股东财请求）；
+    # 批量源全挂时才逐股东财兜底
+    main_net_map: dict = dp.get_main_net_map()
+    if main_net_map:
+        log.info("主力净流入走批量源：覆盖 %d 只", len(main_net_map))
+    else:
         for code, _, _, _ in universe:
             ff = dp.get_stock_fund_flow(code)
             if ff is not None and not ff.empty and "main_net_pct" in ff.columns:
                 v = pd.to_numeric(ff["main_net_pct"], errors="coerce").iloc[-1]
                 main_net_map[code] = None if pd.isna(v) else float(v)
-        for code, name, bd, _ in universe:
-            hist = get_hist(code)
-            crow = cons_row_map.get(code)
-            if hist is None or hist.empty:
-                continue
-            close_s = hist["close"].astype(float)
-            vol_s = hist["volume"].astype(float)
-            vr = None
-            if len(vol_s) >= 21:
-                ma20v = vol_s.rolling(20).mean().iloc[-2]
-                if ma20v and not pd.isna(ma20v) and ma20v > 0:
-                    vr = round(float(vol_s.iloc[-1] / ma20v), 2)
-            res = score_stock(hist, {
-                "code": code, "name": name, "board": bd,
-                "board_rank": board_rank_map.get(bd),
-                "board_zt_count": len(zt_by_board.get(bd, [])),
-                "board_rank_in_stock": rank_in_board.get(code),
-                "main_net_pct": main_net_map.get(code),
-                "sentiment_temp": sentiment["temperature"],
-                "spot_vr": vr,
-                "turnover": None if crow is None else (None if pd.isna(crow.get("turnover")) else float(crow.get("turnover"))),
-                "pct_chg": None if crow is None else (None if pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))),
-                "price": None if crow is None else (None if pd.isna(crow.get("price")) else float(crow.get("price"))),
-            }, cfg)
-            # 附加展示字段（用户需求：主力流入强度/换手/乖离/涨跌概率倾向）
-            res["main_net_pct"] = main_net_map.get(code)
-            res["price"] = float(close_s.iloc[-1])
-            res["pct_chg"] = None if crow is None or pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))
-            res["turnover"] = None if crow is None or pd.isna(crow.get("turnover")) else float(crow.get("turnover"))
-            res["bias20"] = None
-            res["bias60"] = None
-            if len(close_s) >= 60:
-                ma60 = close_s.rolling(60).mean().iloc[-1]
-                res["bias60"] = round(float((close_s.iloc[-1] - ma60) / ma60 * 100), 1)
-            if len(close_s) >= 20:
-                ma20 = close_s.rolling(20).mean().iloc[-1]
-                res["bias20"] = round(float((close_s.iloc[-1] - ma20) / ma20 * 100), 1)
-            # S级冲高形态判定（用户需求：S级进短线候选池）
-            s_grade, s_reason = _s_grade_check(res, hist, close_s)
-            res["s_grade"] = s_grade
-            res["s_reason"] = s_reason
-            if s_grade:
-                short_rows.append(res)
-            elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
-                mid_rows.append(res)
-            elif res["score"] >= 60:
-                long_rows.append(res)
+    for code, name, bd, _ in universe:
+        hist = get_hist(code)
+        crow = cons_row_map.get(code)
+        if hist is None or hist.empty:
+            continue
+        close_s = hist["close"].astype(float)
+        vol_s = hist["volume"].astype(float)
+        vr = None
+        if len(vol_s) >= 21:
+            ma20v = vol_s.rolling(20).mean().iloc[-2]
+            if ma20v and not pd.isna(ma20v) and ma20v > 0:
+                vr = round(float(vol_s.iloc[-1] / ma20v), 2)
+        res = score_stock(hist, {
+            "code": code, "name": name, "board": bd,
+            "board_rank": board_rank_map.get(bd),
+            "board_zt_count": len(zt_by_board.get(bd, [])),
+            "board_rank_in_stock": rank_in_board.get(code),
+            "main_net_pct": main_net_map.get(code),
+            "sentiment_temp": sentiment["temperature"],
+            "spot_vr": vr,
+            "turnover": None if crow is None else (None if pd.isna(crow.get("turnover")) else float(crow.get("turnover"))),
+            "pct_chg": None if crow is None else (None if pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))),
+            "price": None if crow is None else (None if pd.isna(crow.get("price")) else float(crow.get("price"))),
+        }, cfg)
+        # 附加展示字段（用户需求：主力流入强度/换手/乖离/涨跌概率倾向）
+        res["main_net_pct"] = main_net_map.get(code)
+        res["price"] = float(close_s.iloc[-1])
+        res["pct_chg"] = None if crow is None or pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))
+        res["turnover"] = None if crow is None or pd.isna(crow.get("turnover")) else float(crow.get("turnover"))
+        res["bias20"] = None
+        res["bias60"] = None
+        if len(close_s) >= 60:
+            ma60 = close_s.rolling(60).mean().iloc[-1]
+            res["bias60"] = round(float((close_s.iloc[-1] - ma60) / ma60 * 100), 1)
+        if len(close_s) >= 20:
+            ma20 = close_s.rolling(20).mean().iloc[-1]
+            res["bias20"] = round(float((close_s.iloc[-1] - ma20) / ma20 * 100), 1)
+        # S级冲高形态判定（用户需求：S级进短线候选池）
+        s_grade, s_reason = _s_grade_check(res, hist, close_s)
+        res["s_grade"] = s_grade
+        res["s_reason"] = s_reason
+        if s_grade:
+            short_rows.append(res)
+        elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
+            mid_rows.append(res)
+        elif res["score"] >= 60:
+            long_rows.append(res)
     mid_rows.sort(key=lambda x: -x["score"])
     long_rows.sort(key=lambda x: -x["score"])
     short_rows.sort(key=lambda x: -x["score"])
@@ -416,7 +440,9 @@ def run(t0_signal: str = "none") -> Path:
                 "board_main_net_pct": ff_map.get(bd),
                 "board_ladder": board_ladder_count(zt_pool, bd, sbm),
             }
-            ztres = score_limitup({**r.to_dict()}, get_hist(code), bctx, sentiment["temperature"], cfg)
+            # R11 主力净流入验证：涨停池自带字段缺失，从批量主力净占比映射注入
+            ztres = score_limitup({**r.to_dict(), "main_net_pct": main_net_map.get(code)},
+                                  get_hist(code), bctx, sentiment["temperature"], cfg)
             if ztres["in_pool"]:
                 # 近5日涨幅（打板评分展示用）
                 pct5 = None
@@ -658,9 +684,12 @@ def run(t0_signal: str = "none") -> Path:
     cross = Counter(top3_codes)
     picked = [c for c, n in cross.items() if n >= 2]
     if not picked:
-        # 无交叉命中 → 按情绪区间回退单池Top3（冰点/退潮埋伏长线，偏强/高热做短线，中间态做中线）
-        fb = short_rows if zone["name"] in ("偏强区", "高热区") else \
-            (long_rows if zone["name"] in ("冰点区", "退潮区") else mid_rows)
+        # 无交叉命中 → 按情绪区间回退单池Top3（冰点/退潮埋伏长线，偏强/高热做短线，中间态做中线）；
+        # 首选池为空（如高热区但今日无S级短线）时顺位补位，避免"精选0只"
+        order = ([short_rows] if zone["name"] in ("偏强区", "高热区") else
+                 [long_rows] if zone["name"] in ("冰点区", "退潮区") else [mid_rows])
+        order += [mid_rows, long_rows, short_rows]
+        fb = next((rows for rows in order if rows), [])
         picked = [r["code"] for r in fb[:3]]
     picked_set = set(picked)
     jx_rows: list[dict] = []
@@ -721,7 +750,15 @@ def run(t0_signal: str = "none") -> Path:
                          for r in jx_rows[:3]) or "今日无交叉验证精选"
     summary_lines.append(f"⑤ 三池精选：{jx_names}")
     summary_lines.append(f"⑥ 打板纪律：{LIMITUP_DISCIPLINE[1]}")
-    n_miss = len(dp.missing + sentiment["missing"] + sector["missing"])
+    # 数据缺失汇总：成分股类缺失同根因（东财封禁、无替代源）会有数十条重复记录，压缩为一条
+    _all_missing = dp.missing + sentiment["missing"] + sector["missing"]
+    _cons_miss = [m for m in _all_missing if "成分股" in m]
+    missing_list = [m for m in _all_missing if "成分股" not in m]
+    if _cons_miss:
+        missing_list.append(
+            f"[数据缺失] 板块成分股接口不可用（涉及{_cons_miss.__len__()}个板块，同根因：东财封禁、"
+            f"无替代源；候选宇宙已走快照兜底，板块宽度/换手维度降级）")
+    n_miss = len(missing_list)
     if n_miss:
         summary_lines.append(f"⑦ 数据缺失 {n_miss} 项（详见风险区标注，不影响其他模块）")
 
@@ -739,7 +776,7 @@ def run(t0_signal: str = "none") -> Path:
         "limitup_discipline": LIMITUP_DISCIPLINE,
         "eod": eod_rows,
         "positions": pos_payload,
-        "risks": {"missing": dp.missing + sentiment["missing"] + sector["missing"],
+        "risks": {"missing": missing_list,
                   "cooldown": risks_cooldown, "discipline": discipline},
     }
     out = BASE / cfg["run"]["output_dir"] / f"dashboard_{date_compact}.html"

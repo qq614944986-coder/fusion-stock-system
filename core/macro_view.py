@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pandas as pd
+
 
 def build_macro(dp, index_map: dict) -> dict:
     """组装宏观大盘视图。
@@ -43,12 +45,29 @@ def build_macro(dp, index_map: dict) -> dict:
     sh, sz = idx_amounts.get("上证指数"), idx_amounts.get("深证成指")
     if sh is not None and sz is not None:
         out["turnover_yi"] = round((sh + sz) / 1e8, 0)
-        # 量能比：用上证指数近5日成交额均值近似（两市结构稳定，单指数代理可行）
-        sh_idx = dp.get_index_daily(index_map["上证指数"])
-        if sh_idx is not None and "amount" in sh_idx.columns and len(sh_idx) >= 6:
+    else:
+        # 指数成交额缺失（东财封禁、新浪指数无额）→ 全市场快照聚合兜底（沪深A股求和）
+        get_spot = getattr(dp, "get_spot", None)
+        spot = get_spot() if callable(get_spot) else None
+        if spot is not None and not spot.empty and "amount" in spot.columns:
+            codes = spot["code"].astype(str).str.zfill(6)
+            hs = spot[codes.str[:2].isin(["60", "68", "00", "30"])]
+            total = pd.to_numeric(hs["amount"], errors="coerce").sum()
+            if total > 0:
+                out["turnover_yi"] = round(float(total) / 1e8, 0)
+    # 量能比：优先上证成交额5日均；成交额缺失时用成交量5日均近似
+    # （比值口径前后一致，放量/缩量方向等价）
+    sh_idx = dp.get_index_daily(index_map["上证指数"])
+    if sh_idx is not None and len(sh_idx) >= 6:
+        col = None
+        if "amount" in sh_idx.columns and pd.to_numeric(sh_idx["amount"], errors="coerce").notna().any():
+            col = "amount"
+        elif "volume" in sh_idx.columns and pd.to_numeric(sh_idx["volume"], errors="coerce").notna().any():
+            col = "volume"
+        if col:
             try:
-                ma5 = float(sh_idx["amount"].iloc[-6:-1].mean())
-                today = float(sh_idx["amount"].iloc[-1])
+                s = pd.to_numeric(sh_idx[col], errors="coerce")
+                ma5, today = float(s.iloc[-6:-1].mean()), float(s.iloc[-1])
                 if ma5 > 0:
                     out["turnover_ratio_5d"] = round(today / ma5, 2)
             except (TypeError, ValueError):
