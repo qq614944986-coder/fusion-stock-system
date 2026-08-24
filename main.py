@@ -30,6 +30,7 @@ from core.laofan_models import LaofanModels
 from core.position_manager import PositionManager
 from core.macro_view import build_macro
 from core.pool_review import PoolReview, POOLS
+from core.probability import next_day_probability
 from core import fusion_engine as fe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -81,6 +82,38 @@ def _s_grade_check(res: dict, hist: Optional[pd.DataFrame], close_s) -> tuple[bo
     except (KeyError, TypeError, ValueError):
         return False, ""
     return False, ""
+
+
+def _short_feature_check(res: dict) -> tuple[bool, str]:
+    """短线候选池放宽入池的「短线特征」判定（用户确认：S级优先 + 短线特征入池）。
+
+    当非 S级 但满足以下短线特征时，也可进短线观察池（避免 S级 常空池）：
+    - 评分 ≥75；
+    - 量比 ≥1.2（放量）且 当日上涨；
+    - 换手中等偏活跃（≥3%）——有博弈空间、非无量一字；
+    - 所属板块主线（板块排名在前10）或 板块有涨停共振。
+    命中即视为适合短线埋伏的候选，按评分/概率排位。
+    """
+    score = res.get("score") or 0
+    if score < 75:
+        return False, ""
+    vr = res.get("spot_vr")
+    if vr is None or vr < 1.2:
+        return False, ""
+    if (res.get("pct_chg") or 0) <= 0:
+        return False, ""
+    tover = res.get("turnover")
+    if tover is not None and tover < 3:
+        return False, ""
+    br = res.get("board_rank")
+    zt = res.get("board_zt_count") or 0
+    if br is None and not zt:
+        return False, ""
+    mainline = (br is not None and br <= 10) or zt >= 1
+    if not mainline:
+        return False, ""
+    why = f"评分{score:.0f}+放量(vr{vr})+换手{tover or '—'}%+板块#{(br or '—') if br else '共振'}"
+    return True, why
 
 
 def _enrich_review_rows(rows: list[dict]) -> list[dict]:
@@ -348,22 +381,35 @@ def run(t0_signal: str = "none") -> Path:
             res["bias20"] = round(float((close_s.iloc[-1] - ma20) / ma20 * 100), 1)
         # S级冲高形态判定（用户需求：S级进短线候选池）
         s_grade, s_reason = _s_grade_check(res, hist, close_s)
+        # 短线特征放宽入池（用户确认：S级优先 + 短线特征入池，避免S级常空池）
+        short_feat = False
+        short_why = ""
+        if not s_grade:
+            short_feat, short_why = _short_feature_check(res)
         res["s_grade"] = s_grade
         res["s_reason"] = s_reason
-        if s_grade:
+        res["short_feat"] = short_feat
+        res["short_why"] = short_why
+        # 个股次日概率（用户需求：次日收红率/冲高率/涨跌概率倾向 —— 仅历史相似性）
+        res["prob"] = next_day_probability(hist, res["bias20"], res["pct_chg"])
+        if s_grade or short_feat:
+            if short_feat and not s_grade:
+                res["s_reason"] = short_why
             short_rows.append(res)
         elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
             mid_rows.append(res)
         elif res["score"] >= 60:
             long_rows.append(res)
-    mid_rows.sort(key=lambda x: -x["score"])
-    long_rows.sort(key=lambda x: -x["score"])
-    short_rows.sort(key=lambda x: -x["score"])
+    mid_rows.sort(key=lambda x: (-x["score"], (x["prob"].get("red_rate") or 0 if x.get("prob") else 0)))
+    long_rows.sort(key=lambda x: (-x["score"], (x["prob"].get("red_rate") or 0 if x.get("prob") else 0)))
+    short_rows.sort(key=lambda x: (not x.get("s_grade"), -x["score"]))   # S级优先排前
     # 三线各取前5（用户需求：宁缺毋滥，不足5只如实显示）
     mid_rows = mid_rows[:5]
     long_rows = long_rows[:5]
     short_rows = short_rows[:5]
-    log.info("三线池：短线S级 %d / 中线 %d / 长线 %d", len(short_rows), len(mid_rows), len(long_rows))
+    log.info("三线池：短线S级/特征 %d（S级%d+特征%d） / 中线 %d / 长线 %d",
+             len(short_rows), sum(1 for r in short_rows if r.get("s_grade")),
+             sum(1 for r in short_rows if not r.get("s_grade")), len(mid_rows), len(long_rows))
 
     # ========== 4.5 观察池复盘闭环（入选→次日验证→去弱留强→滚动统计） ==========
     # 池内仍在观察的代码补拉日K（历史入选可能不在今日候选宇宙内）
@@ -462,6 +508,9 @@ def run(t0_signal: str = "none") -> Path:
                     "turnover": ztres["turnover"], "main_net_pct": ztres["main_net_pct"],
                     "pct5": pct5, "board": bd,
                     "board_zt_count": bctx["board_zt_count"], "board_ladder": bctx["board_ladder"],
+                    # 次日执行提示（用户需求：仅在涨停价仍封住且能正常成交时观察；炸板不回封/封单衰减放弃）
+                    "next_exec": ("次日：仅当涨停价仍封住且能正常成交时观察；"
+                                  "炸板不回封/封单快速衰减/板块前排转弱 → 放弃"),
                 })
     zt_rows.sort(key=lambda x: -x["score"])
 
@@ -731,21 +780,26 @@ def run(t0_signal: str = "none") -> Path:
     # ========== 8.5 总结决策与操作建议（用户需求：使用者第一眼先看这段） ==========
     delta_txt = "—" if sentiment.get("delta") is None else f"{sentiment['delta']:+.1f}分"
     leader = sentiment.get("leader_stock") or {}
+    # 情绪温度近30日百分位（周期位置洞察）
+    _shist30 = [r["temp"] for r in _sentiment_history(cfg, today_iso, sentiment["temperature"])[-30:]]
+    _pctl = round(sum(1 for t in _shist30 if t < sentiment["temperature"]) / len(_shist30) * 100) if len(_shist30) >= 5 else None
+    _pctl_txt = "—" if _pctl is None else f" 近30日约第{_pctl}百分位（{'偏热' if _pctl >= 80 else '偏冷' if _pctl <= 20 else '中性'}）"
+
     summary_lines = [
         f"① 市场环境：{macro['summary']}",
-        f"② 情绪周期：{sentiment['temperature']:.0f}分（{zone['name']}·{zone['label']}），较前日{delta_txt}"
+        f"② 情绪周期：{sentiment['temperature']:.0f}分（{zone['name']}·{zone['label']}），较前日{delta_txt}{_pctl_txt}"
         + (f"；情绪龙头 {leader.get('name','')}({leader.get('lian_ban','')}连板)" if leader else ""),
         f"③ 仓位纪律：总仓位≤{zone['max_total']}%，单票≤{zone['max_single']}%，持仓≤{zone['max_count']}只"
         + ("；高热区禁开新仓" if zone["name"] == "高热区" else ""),
     ]
     if sector["ambush"]["attack"]:
         a = sector["ambush"]["attack"][0]
-        summary_lines.append(f"④ 板块埋伏：进攻 {a['board']}（{a['basis']}）→ {a['action']}")
+        summary_lines.append(f"④ 板块埋伏（{zone['name']}→进攻策略）：进攻 {a['board']}（{a['basis']}）→ {a['action']}")
     elif sector["ambush"]["defend"]:
         d = sector["ambush"]["defend"][0]
-        summary_lines.append(f"④ 板块防守：{d['board']}（{d['basis']}）→ {d['action']}")
+        summary_lines.append(f"④ 板块埋伏（{zone['name']}→防守策略）：防守 {d['board']}（{d['basis']}）→ {d['action']}")
     else:
-        summary_lines.append(f"④ 板块埋伏：{sector['ambush']['watch']}")
+        summary_lines.append(f"④ 板块埋伏（{zone['name']}）：{sector['ambush']['watch']}")
     jx_names = "、".join(f"{r['name']}({r['code']})×{r['cross_n']}源"
                          for r in jx_rows[:3]) or "今日无交叉验证精选"
     summary_lines.append(f"⑤ 三池精选：{jx_names}")
@@ -761,6 +815,29 @@ def run(t0_signal: str = "none") -> Path:
     n_miss = len(missing_list)
     if n_miss:
         summary_lines.append(f"⑦ 数据缺失 {n_miss} 项（详见风险区标注，不影响其他模块）")
+
+    # 今日操作决策清单（用户需求①：第一眼看到可执行决策，条件化操作指令）
+    _ops = ["—— 今日操作决策清单 ——"]
+    _ops.append(f"【仓位】情绪{zone['name']}({sentiment['temperature']:.0f}分)：总仓位≤{zone['max_total']}%、单票≤{zone['max_single']}%、持仓≤{zone['max_count']}只"
+                + ("；不追高不开新仓，等冰点/退潮企稳信号再动" if zone["name"] in ("冰点区", "退潮区")
+                   else "；若个股已高位过热则分批兑现，否则按纪律持筹"))
+    if sector["ambush"]["attack"]:
+        _a = sector["ambush"]["attack"][0]
+        _ops.append(f"【埋伏】进攻方向 {_a['board']}（{_a['basis']}）：{_a['action']}；若板块龙头转弱或情绪退潮则放弃埋伏等待")
+    elif sector["ambush"]["defend"]:
+        _d = sector["ambush"]["defend"][0]
+        _ops.append(f"【埋伏】防守方向 {_d['board']}（{_d['basis']}）：{_d['action']}；若情绪回暖转多则回补进攻仓位")
+    else:
+        _ops.append(f"【埋伏】{sector['ambush']['watch']}（仅观察，不动作）")
+    if jx_rows:
+        for _r in jx_rows[:3]:
+            _ops.append(f"【精选】{_r['name']}({_r['code']})×{_r['cross_n']}源：可低吸埋伏；若次日冲高>3%分批兑现，收盘破MA5或跌破成本离场")
+    else:
+        _ops.append("【精选】今日无交叉验证精选，仅观察候选池，不追高")
+    if zt_rows:
+        _t = zt_rows[0]
+        _ops.append(f"【打板】{_t['name']}({_t['code']}){_t['lian_ban']}板评分{_t['score']}：仅在涨停价仍封住且可成交时参与；炸板不回封/封单快速衰减立即放弃")
+    summary_lines.extend(_ops)
 
     ctx = {
         "date": today_iso,

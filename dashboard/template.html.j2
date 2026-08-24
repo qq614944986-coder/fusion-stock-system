@@ -65,23 +65,33 @@
   .rv-h { font-size:12px; color:var(--dim); margin:8px 0 4px; }
   /* ⑥ 打板纪律 */
   .dis-line { padding:4px 0 4px 14px; border-left:2px solid var(--warn); margin:6px 0; font-size:12px; }
+  /* 决策流水线 */
+  .chain { font-size:11px; color:var(--dim); font-weight:normal; }
+  .chain-bar { font-size:12px; color:var(--accent); background:#0d1117; border:1px dashed var(--border);
+               border-radius:6px; padding:9px 14px; margin-bottom:14px; line-height:1.8; }
+  .op-line { font-size:13px; line-height:2.0; padding:3px 0; border-bottom:1px dashed #21262d; }
+  .op-line:last-child { border-bottom:none; }
+  .op-line b { color:#7ee787; }
+  .op-head { font-weight:bold; color:var(--accent); margin:6px 0 2px; }
+  .pl { font-size:11px; color:var(--dim); }
 </style>
 </head>
 <body>
 <h1>双引擎选股择时仪表盘 <span class="zone-badge" id="zoneBadge"></span></h1>
 <div class="sub" id="subLine"></div>
 
-<!-- ⓪ 总结决策与操作建议（使用者第一眼） -->
-<div class="card summary-card"><h2>⓪ 总结决策与操作建议</h2><div id="summary"></div></div>
+<!-- ① 总结决策与操作清单（使用者第一眼） -->
+<div class="card summary-card"><h2>⓪ 总结决策 <span class="chain">先看这里，再下判断</span></h2><div id="summary"></div></div>
+<div class="chain-bar">决策流水线：②宏观 → ③情绪 → ④板块埋伏 → ⑤候选池 → ⑥⑦观察复盘 → ⑧打板 → ⑨三池精选</div>
 
-<!-- ① 宏观大盘 -->
-<div class="card"><h2>① 宏观大盘（指数 · 量能 · 外围）</h2>
+<!-- ② 宏观大盘 -->
+<div class="card"><h2>① 宏观大盘 <span class="chain">↳ 指数强弱/量能 → 定今日基调</span></h2>
   <div class="idx-grid" id="idxGrid"></div>
   <div class="macro-strip" id="macroStrip"></div></div>
 
-<!-- ② 情绪周期 -->
+<!-- ③ 情绪周期 -->
 <div class="grid2">
-  <div class="card"><h2>② 情绪周期走势（近30日）</h2><div id="sentLine" class="chart"></div></div>
+  <div class="card"><h2>② 情绪周期走势（近30日） <span class="chain">↳ 温度/区间 → 定仓位上限</span></h2><div id="sentLine" class="chart"></div></div>
   <div class="card"><h2>情绪温度表盘</h2><div id="gauge" class="chart"></div></div>
 </div>
 <div class="card"><h2>市场情绪指标（收盘终值）</h2>
@@ -89,28 +99,34 @@
   <div class="grid2"><div id="radar" class="chart-sm"></div><div id="zoneInfo" style="font-size:12px;line-height:1.8;align-self:center"></div></div>
 </div>
 
-<!-- ③ 板块埋伏建议 + 轮动榜 -->
-<div class="card"><h2>③ 板块埋伏建议（情绪驱动 · 进攻/防守）</h2><div id="ambush"></div></div>
+<!-- ④ 板块埋伏建议 + 轮动榜 -->
+<div class="card"><h2>③ 板块埋伏建议 <span class="chain">↳ 情绪区间 → 定进攻/防守板块</span></h2><div id="ambush"></div></div>
 <div class="card"><h2>板块轮动榜（六维度 + 广度/领涨/主力流入）</h2>
   <div class="tbl-wrap"><table id="sectorTbl"></table></div></div>
 
-<!-- ④ 三线评分总揽 -->
-<div class="card"><h2>④ 短中长线评分总揽（主板 · 各取前5 · 宁缺毋滥）</h2><div id="pools"></div></div>
+<!-- ⑤ 短中长线评分总揽 -->
+<div class="card"><h2>④ 短中长线评分总揽 <span class="chain">↳ 门槛板块 → 候选宇宙 → 评分+次日概率</span></h2><div id="pools"></div></div>
 
-<!-- ⑤ 观察池复盘 -->
-<div class="card"><h2>⑤ 观察池复盘（入选→次日验证→去弱留强）</h2><div id="poolReview"></div></div>
+<!-- ⑥ 短线观察池复盘 -->
+<div class="card"><h2>⑤ 短线观察池复盘 <span class="chain">↳ 短线候选 → 次日验证 → 去弱留强(破5日线删)</span></h2><div id="poolReview"></div></div>
 
-<!-- ⑥ 打板筛选 -->
-<div class="card"><h2>⑥ 打板筛选（主板 · 首半优先 · 板块共振优先）</h2>
+<!-- ⑦ 中长线观察池复盘 -->
+<div class="card"><h2>⑥ 中长线观察池复盘 <span class="chain">↳ 中线破MA20/评分&lt;60删 · 长线破中期带下沿删</span></h2><div id="poolReview2"></div></div>
+
+<!-- ⑧ 打板筛选 -->
+<div class="card"><h2>⑦ 打板筛选 <span class="chain">↳ 主板·首半·三板·封板·量能·主力净额·板块共振</span></h2>
   <div id="limitupDiscipline"></div><div id="limitup"></div></div>
 
-<!-- ⑦ 持仓监控 + ⑧ 信号日历 -->
-<div class="card"><h2>⑦ 持仓监控（老樊状态机 + 均线带 + 条件化建议）</h2><div id="positions"></div></div>
-<div class="card"><h2>⑧ 信号日历（近20日 BP/SP 触发点）</h2>
+<!-- ⑨ 三池交叉验证精选 -->
+<div class="card"><h2>⑧ 三池Top3交叉验证精选 <span class="chain">↳ 多源命中≥2 → 交叉优先</span></h2><div id="jxTop"></div></div>
+
+<!-- ⑩ 持仓监控 + ⑪ 信号日历 -->
+<div class="card"><h2>⑨ 持仓监控（老樊状态机 + 均线带 + 条件化建议）</h2><div id="positions"></div></div>
+<div class="card"><h2>⑩ 信号日历（近20日 BP/SP 触发点）</h2>
   <div class="tbl-wrap"><table id="sigTbl"></table></div></div>
 
-<!-- ⑨ 风险提示 -->
-<div class="card"><h2>⑨ 风险提示</h2><div id="risks"></div></div>
+<!-- ⑫ 风险提示 -->
+<div class="card"><h2>⑪ 风险提示</h2><div id="risks"></div></div>
 
 <div class="footer">本工具为信号提示辅助，不构成投资建议，最终决策需人工确认。<br>
 生成时间 {{ generated_at }}</div>
@@ -138,16 +154,20 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
 // ---------- ⓪ 总结决策与操作建议
 (function(){
   const lines = D.summary||[];
-  document.getElementById("summary").innerHTML =
-    lines.map(l=>`<div class="summary-line">${esc(l)}</div>`).join("") ||
-    "<div class='factor-note'>（无）</div>";
+  let h = ""; let inOps = false;
+  lines.forEach(l=>{
+    if(l.indexOf("——")===0){ inOps=true; h += `<div class="op-head">${esc(l)}</div>`; return; }
+    if(inOps){ h += `<div class="op-line">${esc(l)}</div>`; return; }
+    h += `<div class="summary-line">${esc(l)}</div>`;
+  });
+  document.getElementById("summary").innerHTML = h || "<div class='factor-note'>（无）</div>";
 })();
 
 // ---------- ① 宏观大盘
 (function(){
   const M = D.macro||{indices:[],global_indices:[]};
-  document.getElementById("idxGrid").innerHTML = (M.indices||[]).map(i=>`
-    <div class="idx-cell"><div class="nm">${esc(i.name)}</div>
+  document.getElementById("idxGrid").innerHTML = (M.indices||[]).map(i=>
+    `<div class="idx-cell"><div class="nm">${esc(i.name)}${["创业板指","科创50"].includes(i.name)?'<span class="pl">·双创</span>':""}</div>
       <div class="px ${pctCls(i.pct_chg)}">${i.close??"—"} <span style="font-size:12px">${pct(i.pct_chg)}</span></div>
       <div class="amt">${i.amount_yi==null?"":"成交额 "+i.amount_yi+"亿"}</div></div>`).join("");
   const gi = (M.global_indices||[]).map(g=>
@@ -261,17 +281,22 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   function poolTbl(rows, isShort){
     if(!rows || !rows.length) return "<div class='factor-note'>（空 · 宁缺毋滥）</div>";
     let h = "<tr><th>代码</th><th>名称</th><th>板块</th><th>现价</th><th>涨幅</th><th>主力流入</th>" +
-            "<th>换手率</th><th>乖离60</th><th>评分</th>" +
-            (isShort?"<th>S级形态</th>":"<th>板块排名</th>") + "<th>建议动作</th></tr>";
+            "<th>换手率</th><th>乖离60</th><th>评分</th><th>次日收红率</th><th>冲高率</th><th>倾向</th>" +
+            (isShort?"<th>S级/短线特征</th>":"<th>板块排名</th>") + "<th>建议动作</th></tr>";
     rows.forEach(r=>{
+      const pb = r.prob||{};
       h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${esc(r.board||"—")}</td>
         <td>${r.price==null?"—":r.price}</td>
         <td class="${pctCls(r.pct_chg)}">${pct(r.pct_chg)}</td>
         <td class="${pctCls(r.main_net_pct)}">${r.main_net_pct==null?"—":pct(r.main_net_pct)}</td>
         <td>${r.turnover==null?"—":r.turnover+"%"}</td>
         <td class="${pctCls(r.bias60)}">${r.bias60==null?"—":r.bias60+"%"}</td>
-        <td><b>${r.score??"—"}</b>${r.grade?` <span class="factor-note">${esc(r.grade)}</span>`:""}</td>` +
-        (isShort?`<td>${r.s_reason?`<span class="tag tag-s">S级</span> ${esc(r.s_reason)}`:"—"}</td>`
+        <td><b>${r.score??"—"}</b>${r.grade?` <span class="factor-note">${esc(r.grade)}</span>`:""}</td>
+        <td class="${pb.red_rate==null?"":(pb.red_rate>=60?"num-up":pb.red_rate<=40?"num-down":"")}">${pb.red_rate==null?"—":pb.red_rate+"%"}</td>
+        <td class="${pb.spike_rate==null?"":(pb.spike_rate>=40?"num-up":"")}">${pb.spike_rate==null?"—":pb.spike_rate+"%"}</td>
+        <td>${esc(pb.tendency||"—")}<span class="pl">${pb.samples?`(n${pb.samples})`:""}</span></td>` +
+        (isShort?`<td>${r.s_grade?`<span class="tag tag-s">S级</span> ${esc(r.s_reason||"")}`:
+            (r.short_feat?`<span class="tag tag-attack">特征</span> ${esc(r.s_reason||"")}`:"—")}</td>`
                 :`<td>${r.board_rank?("#"+r.board_rank):"—"}</td>`) +
         `<td>${esc(r.action||"—")}</td></tr>`;
     });
@@ -279,22 +304,26 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   }
   const P = D.pools||{};
   document.getElementById("pools").innerHTML =
-    `<div class="pool-h" style="color:#f85149;margin-top:0">短线候选池（S级冲高优先形态 · 1-3天 · 破MA5删除）${statChip("短线")}</div>${poolTbl(P.短线,true)}` +
+    `<div class="pool-h" style="color:#f85149;margin-top:0">短线候选池（S级冲高优先 + 短线特征 · 1-3天 · 破MA5删除）${statChip("短线")}</div>${poolTbl(P.短线,true)}` +
     `<div class="pool-h" style="color:#3fb950">中线候选池（主升确认 · 5-20天）${statChip("中线")}</div>${poolTbl(P.中线,false)}` +
-    `<div class="pool-h" style="color:#58a6ff">长线候选池（观察区 · 20天+ · 等主升确认升级）${statChip("长线")}</div>${poolTbl(P.长线,false)}` +
-    `<div class="pool-h" style="color:#8957e5">三池Top3交叉验证精选（≥2源命中优先）</div>${jxTbl(P.精选)}`;
+    `<div class="pool-h" style="color:#58a6ff">长线候选池（观察区 · 20天+ · 等主升确认升级）${statChip("长线")}</div>${poolTbl(P.长线,false)}`;
+
+  // ⑧ 三池Top3交叉验证精选（独立卡片）
   function jxTbl(rows){
     if(!rows || !rows.length) return "<div class='factor-note'>（今日无交叉验证精选）</div>";
-    let h = "<tr><th>代码</th><th>名称</th><th>交叉源</th><th>命中数</th><th>评分</th><th>涨幅</th><th>建议动作</th></tr>";
+    let h = "<tr><th>代码</th><th>名称</th><th>交叉源</th><th>命中数</th><th>评分</th><th>涨幅</th><th>次日收红率</th><th>建议动作</th></tr>";
     rows.forEach(r=>{
+      const pb = r.prob||{};
       h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td>
         <td>${esc(r.cross_src||"—")}</td><td><b>×${r.cross_n??1}</b></td>
         <td><b>${r.score??"—"}</b></td>
         <td class="${pctCls(r.pct_chg)}">${pct(r.pct_chg)}</td>
+        <td class="${pb.red_rate==null?"":(pb.red_rate>=60?"num-up":"")}">${pb.red_rate==null?"—":pb.red_rate+"%"}</td>
         <td>${esc(r.action||"—")}</td></tr>`;
     });
     return `<div class="tbl-wrap"><table>${h}</table></div>`;
   }
+  document.getElementById("jxTop").innerHTML = jxTbl(P.精选);
 })();
 
 // ---------- ⑤ 观察池复盘
@@ -322,21 +351,25 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
     });
     return `<div class="tbl-wrap"><table>${h}</table></div>`;
   }
-  const names = {"短线":"短线观察池（破5日线删除）","中线":"中线观察池（评分<60或破MA20删除）","长线":"长线观察池（破中期带下沿删除）"};
-  let h = "";
-  ["短线","中线","长线"].forEach(p=>{
-    h += `<div class="rv-block"><div class="pool-h" style="margin-top:0">${names[p]}</div>
-      <div class="rv-stats">${statsLine(p)}</div>`;
-    const yd = (PR.yesterday||{})[p]||[];
-    h += `<div class="rv-h">上一交易日（${esc(PR.yesterday_date||"—")}）评分前五：</div>${reviewTbl(yd)}`;
-    const act = (PR.active||{})[p]||[];
-    h += `<div class="rv-h">当前在池（去弱留强 · 共${act.length}条）：</div>${reviewTbl(act)}</div>`;
-  });
-  if((PR.removed||[]).length){
-    h += `<div class="rv-h">今日删除日志：</div>` +
-      PR.removed.map(m=>`<div class="dis-line">${esc(m)}</div>`).join("");
+  const names = {"短线":"短线观察池（破5日线删除）","中线":"中线观察池（评分<60 或 破MA20 删除）","长线":"长线观察池（破中期带下沿删除）"};
+  function renderPools(pools){
+    let h = "";
+    pools.forEach(p=>{
+      h += `<div class="rv-block"><div class="pool-h" style="margin-top:0">${names[p]}</div>
+        <div class="rv-stats">${statsLine(p)}</div>`;
+      const yd = (PR.yesterday||{})[p]||[];
+      h += `<div class="rv-h">上一交易日（${esc(PR.yesterday_date||"—")}）本池评分前五：</div>${reviewTbl(yd)}`;
+      const act = (PR.active||{})[p]||[];
+      h += `<div class="rv-h">当前在池（去弱留强 · 共${act.length}条）：</div>${reviewTbl(act)}</div>`;
+    });
+    if((PR.removed||[]).length){
+      h += `<div class="rv-h">今日删除日志：</div>` +
+        PR.removed.map(m=>`<div class="dis-line">${esc(m)}</div>`).join("");
+    }
+    return h;
   }
-  document.getElementById("poolReview").innerHTML = h;
+  document.getElementById("poolReview").innerHTML = renderPools(["短线"]);
+  document.getElementById("poolReview2").innerHTML = renderPools(["中线","长线"]);
 })();
 
 // ---------- ⑥ 打板筛选
@@ -347,7 +380,7 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   if(!rows.length){ document.getElementById("limitup").innerHTML =
     "<div class='factor-note'>（今日无符合条件标的 · 一字/炸板/资金流出/极端换手已排除）</div>"; return; }
   let h = "<tr><th>代码</th><th>名称</th><th>板位</th><th>封板时间</th><th>开板</th><th>量比</th><th>换手率</th>" +
-          "<th>主力净额</th><th>近5日涨幅</th><th>板块（共振）</th><th>打板评分</th><th>建议</th></tr>";
+          "<th>主力净额</th><th>近5日涨幅</th><th>板块（共振）</th><th>打板评分</th><th>建议</th><th>次日执行提示</th></tr>";
   rows.forEach(r=>{
     h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td><b>${r.lian_ban??"—"}板</b></td>
       <td>${esc(r.first_seal_time||"—")}</td><td>${r.open_times??0}次</td>
@@ -355,7 +388,8 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
       <td class="${pctCls(r.main_net_pct)}">${r.main_net_pct==null?"—":pct(r.main_net_pct)}</td>
       <td class="${pctCls(r.pct5)}">${pct(r.pct5)}</td>
       <td>${esc(r.board||"—")}<span class="factor-note">（${r.board_zt_count??0}涨停/梯队${r.board_ladder??0}档）</span></td>
-      <td><b>${r.score??"—"}</b></td><td>${esc(r.action||"—")}</td></tr>`;
+      <td><b>${r.score??"—"}</b></td><td>${esc(r.action||"—")}</td>
+      <td><span class="factor-note">${esc(r.next_exec||"—")}</span></td></tr>`;
   });
   document.getElementById("limitup").innerHTML = `<div class="tbl-wrap"><table>${h}</table></div>`;
 })();
