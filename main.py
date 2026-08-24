@@ -500,7 +500,8 @@ def run(t0_signal: str = "none") -> Path:
                     "pct_chg": r.get("pct_chg"),
                     "score": ztres["score"], "zt_score": ztres["score"],
                     "board_rank": board_rank_map.get(bd), "markers": [f"{ztres['lian_ban']}连板"],
-                    "laofan_sig": "", "action": f"打板观察（{ztres['dims'].get('板块协同_说明', '')}）",
+                    "laofan_sig": "",
+                    "action": f"打板观察（{ztres['dims'].get('板块共振_说明', '')}）",
                     "grade": f"打板{ztres['score']}分",
                     # 打板明细（用户需求：量能/换手/主力净额/近5日涨幅/板块共振）
                     "lian_ban": ztres["lian_ban"], "first_seal_time": ztres["first_seal_time"],
