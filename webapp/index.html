@@ -239,6 +239,7 @@ function render() {
       ${cardSectors(DATA.sectors || {})}
     </div>
     ${cardReview()}
+    ${cardOpportunity()}
     ${cardPools(pools)}
     ${cardWatch()}
     ${cardRisk()}`;
@@ -308,6 +309,30 @@ function cardReview() {
   return card('⑤ 候选池复盘（入选 → 次日验证 → 去弱留强）',
     block('短线','短线观察池（破5日线删除）') + block('中线','中线观察池（评分&lt;60 或 破MA20 删除）') + block('长线','长线观察池（破中期带下沿删除）') +
     (rem?`<div style="margin-top:8px"><b style="color:var(--up);font-size:13px">今日删除日志</b>${rem}</div>`:''));
+}
+
+/* ---------- ④.5 双轨机会卡片 ---------- */
+function cardOpportunity() {
+  const cards = DATA.cards || [];
+  const EXEC = {'双轨':'var(--up)','右轨主升跟随':'var(--down)','左轨预期差低吸':'var(--accent)','温和左侧布局':'var(--violet)'};
+  if (!cards.length) return card('④ 双轨机会卡片', '<div style="color:var(--faint)">今日无符合双轨介入位的机会卡 · 东财封禁/降级期候选受限，解封后恢复</div>');
+  const items = cards.map(c => {
+    const sigs = (c.signals||[]).map(s => `<span class="tag atk">[${s.kind}]${esc(s.name)} ${esc(s.value||'')}</span>`).join(' ');
+    const a = c.anchors||{};
+    const aTxt = ['估值'+(a.est_ok?'✓':'✗'),'研报'+(a.forecast_ok?'✓':'✗'),'产业'+(a.trend_ok?'✓':'✗')].join(' ');
+    return `<div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0">
+      <div style="font-weight:700">${esc(c.name)} <span style="color:var(--faint);font-size:11px">${c.code}</span>
+        <span class="tag def">${esc(c.track)}</span>
+        <span style="color:${EXEC[c.exec_kind]||'var(--gold)'};font-weight:600">${esc(c.exec_kind)}</span>
+        <span style="color:var(--dim);font-size:11px">介入 ${esc(c.exec_sig)}</span></div>
+      <div style="font-size:12px;color:#9db4d6;margin:5px 0">${sigs||'<span style="color:var(--faint)">仅观察</span>'}</div>
+      <div style="font-size:11px;color:var(--dim)">${aTxt} &nbsp; ${esc((c.evidence||[]).join(' · '))}</div>
+      ${c.wave&&c.wave.passes?`<div style="font-size:11px;color:var(--down)">右轨门槛过 ${Object.entries(c.wave.gates||{}).filter(([_,v])=>v).map(([k])=>k).join('+')} · 主升${c.wave.score}分</div>`:''}
+      <div style="font-size:12px;color:#8fd8b4;border-top:1px dashed var(--line);margin-top:6px;padding-top:4px">${esc(c.thesis)}</div>
+      <div style="font-size:11px;color:#c8b48a">放弃条件：${esc(c.risk_off)}</div>
+    </div>`;
+  }).join('');
+  return card('④ 双轨机会卡片', items, `${cards.length} 张`);
 }
 
 /* ---------- ① 情绪温度 ---------- */

@@ -31,6 +31,11 @@ from core.position_manager import PositionManager
 from core.macro_view import build_macro
 from core.pool_review import PoolReview, POOLS
 from core.probability import next_day_probability
+from core.anomaly_radar import detect_anomalies
+from core.expectation_gap import evaluate as eg_evaluate
+from core.main_wave_upgrade import evaluate as mw_evaluate
+from core.track_signals import classify_detail as track_detail
+from core.opportunity_card import build_card
 from core import fusion_engine as fe
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -410,6 +415,72 @@ def run(t0_signal: str = "none") -> Path:
     log.info("三线池：短线S级/特征 %d（S级%d+特征%d） / 中线 %d / 长线 %d",
              len(short_rows), sum(1 for r in short_rows if r.get("s_grade")),
              sum(1 for r in short_rows if not r.get("s_grade")), len(mid_rows), len(long_rows))
+
+    # ========== 4.75 双轨机会卡片流（左轨预期差低吸 + 右轨主升跟随，v1.0） ==========
+    # 拉免费机会挖掘数据（东财封禁时失败→空，缺源标 [数据缺失] 由引擎容错）
+    if dp.em_ok():
+        lhb_df, dzjy_df, yjyg_df, yjbb_df = (dp.get_lhb_detail(), dp.get_dzjy(),
+                                             dp.get_yjyg(), dp.get_yjbb())
+    else:
+        lhb_df = dzjy_df = yjyg_df = yjbb_df = None
+        log.info("东财不可用，机会挖掘数据源降级为空（资金/业绩/研报证据缺失）")
+
+    def _grp(df):
+        if df is None or getattr(df, "empty", True) or "code" not in df.columns:
+            return {}
+        return {str(c).zfill(6): list(g.to_dict("records")) for c, g in df.groupby("code")}
+
+    ds_data = {"lhb_by_code": _grp(lhb_df), "dzjy_by_code": _grp(dzjy_df),
+               "yjyg_by_code": _grp(yjyg_df), "yjbb_by_code": _grp(yjbb_df)}
+
+    # 板块20日涨幅（右轨·板块趋势前置；缺失时退回板块当日涨幅）
+    board_alpha_map: dict = {}
+    for bd, bh in board_hist_map.items():
+        if bh is not None and len(bh) >= 21 and "close" in bh.columns:
+            c = bh["close"].astype(float)
+            base, now = float(c.iloc[-21]), float(c.iloc[-1])
+            if base > 0:
+                board_alpha_map[bd] = round((now - base) / base * 100.0, 2)
+
+    opcards: list[dict] = []
+    _EXEC_PRI = {"双轨": 0, "右轨主升跟随": 1, "左轨预期差低吸": 2, "温和左侧布局": 3, "仅异动观察": 9}
+    for code, name, bd, _ in universe:
+        hist = get_hist(code)
+        if hist is None or len(hist) < 30:
+            continue
+        rrow_d = cons_row_map.get(code)
+        if rrow_d is None:
+            rrow_d = {"pct_chg": (float(hist["pct_chg"].iloc[-1])
+                                  if "pct_chg" in hist.columns else None)}
+        track = None
+        stage = None
+        tr = track_detail(code, name)
+        if tr:
+            track, stage = tr[0], tr[1]
+        anom = detect_anomalies(code, name, hist, rrow_d, ds_data, cfg)
+        resfc = None
+        if dp.em_ok():
+            try:
+                resfc = dp.get_research_forecast(code)
+            except Exception:
+                resfc = None
+        eg = eg_evaluate(hist, {**ds_data, "code": code, "resfc_by_code": {code: resfc}},
+                         {"belongs": bool(track), "track": track}, cfg)
+        bctx = {"board": bd, "board_pct_chg": boards_pct_map.get(bd),
+                "board_rank": board_rank_map.get(bd),
+                "board_zt_count": len(zt_by_board.get(bd, [])),
+                "board_alpha": board_alpha_map.get(bd)}
+        wave = mw_evaluate(hist, rrow_d, bctx, track, cfg)
+        card = build_card(code, name, track, anom, eg, wave, cfg, stage=stage)
+        if card["exec_kind"] != "仅异动观察" or card["signals"]:
+            opcards.append(card)
+    opcards.sort(key=lambda c: (_EXEC_PRI.get(c["exec_kind"], 9), -(len(c["signals"]))))
+    opcards = opcards[:int(cfg["opportunity"]["universe_limit"])]
+    log.info("双轨机会卡片 %d 张（双轨%d/右轨%d/左轨%d/温和%d）", len(opcards),
+             sum(1 for c in opcards if c["exec_kind"] == "双轨"),
+             sum(1 for c in opcards if c["exec_kind"] == "右轨主升跟随"),
+             sum(1 for c in opcards if c["exec_kind"] == "左轨预期差低吸"),
+             sum(1 for c in opcards if c["exec_kind"] == "温和左侧布局"))
 
     # ========== 4.5 观察池复盘闭环（入选→次日验证→去弱留强→滚动统计） ==========
     # 池内仍在观察的代码补拉日K（历史入选可能不在今日候选宇宙内）
@@ -838,6 +909,9 @@ def run(t0_signal: str = "none") -> Path:
     if zt_rows:
         _t = zt_rows[0]
         _ops.append(f"【打板】{_t['name']}({_t['code']}){_t['lian_ban']}板评分{_t['score']}：仅在涨停价仍封住且可成交时参与；炸板不回封/封单快速衰减立即放弃")
+    if opcards:
+        _ops.append("【机会】" + "、".join(f"{c['name']}({c['track']})·{c['exec_kind']}" for c in opcards[:3])
+                    + f"：按卡片介入 '{opcards[0].get('exec_sig','—')}' 跟踪；产业逻辑待人工确认")
     summary_lines.extend(_ops)
 
     ctx = {
@@ -851,6 +925,7 @@ def run(t0_signal: str = "none") -> Path:
         "pools": {"短线": short_rows, "中线": mid_rows, "长线": long_rows,
                   "打板": zt_rows, "尾盘": eod_rows, "精选": jx_rows},
         "pool_review": review_payload,
+        "cards": opcards,
         "limitup_discipline": LIMITUP_DISCIPLINE,
         "eod": eod_rows,
         "positions": pos_payload,

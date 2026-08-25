@@ -656,6 +656,79 @@ class DataProvider:
 
         return self._fetch(f"fundflow_{code}", _do, "pkl")
 
+    # ---------------- 机会挖掘数据源（左轨异动雷达/预期差用，免费akshare，已核验存在）
+    # 统一把代码/名称列标准化：code（6位）/ name；其余原始列保留，由引擎 get() 容错取用。
+
+    @staticmethod
+    def _norm_opp(cols_code, cols_name):
+        def f(df) -> pd.DataFrame:
+            if df is None or not hasattr(df, "columns") or df.empty:
+                return df
+            df = df.copy()
+            cc = next((c for c in cols_code if c in df.columns), None)
+            if cc:
+                df["code"] = df[cc].astype(str).str.zfill(6)
+            nc = next((c for c in cols_name if c in df.columns), None)
+            if nc:
+                df["name"] = df[nc]
+            return df
+        return f
+
+    def get_lhb_detail(self, date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """当日龙虎榜明细（东财）。列含 代码/名称/龙虎榜净买额/龙虎榜买入额/上榜原因/上榜后N日。"""
+        d = date or self.trade_date
+        norm = self._norm_opp(("代码",), ("名称",))
+
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            return norm(ak.stock_lhb_detail_em(start_date=d, end_date=d))
+
+        return self._fetch(f"lhb_{d}", _do, "pkl")
+
+    def get_dzjy(self) -> Optional[pd.DataFrame]:
+        """当日大宗交易明细（东财，默认今日）。列含 证券代码/证券简称/成交价/成交量/成交额。"""
+        d = self.trade_date
+        norm = self._norm_opp(("证券代码",), ("证券简称",))
+
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            return norm(ak.stock_dzjy_mrmx())
+
+        return self._fetch(f"dzjy_{d}", _do, "pkl")
+
+    def get_yjyg(self) -> Optional[pd.DataFrame]:
+        """最新业绩预告（东财）。列含 股票代码/预告类型/业绩变动幅度/预测数值/公告日期。"""
+        d = self.trade_date
+        norm = self._norm_opp(("股票代码",), ("股票简称",))
+
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            return norm(ak.stock_yjyg_em())
+
+        return self._fetch(f"yjyg_{d}", _do, "pkl")
+
+    def get_yjbb(self) -> Optional[pd.DataFrame]:
+        """最新业绩报表（东财）。列含 股票代码/净利润-同比增长/销售毛利率/净资产收益率/所处行业。"""
+        d = self.trade_date
+        norm = self._norm_opp(("股票代码",), ("股票简称",))
+
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            return norm(ak.stock_yjbb_em())
+
+        return self._fetch(f"yjbb_{d}", _do, "pkl")
+
+    def get_research_forecast(self, code: str) -> Optional[pd.DataFrame]:
+        """研报一致预期（单股盈利预测，东财）。列含 股票代码/评级/机构/近一月研报数/各年盈利预测收益。"""
+        code = str(code).zfill(6)
+        norm = self._norm_opp(("股票代码",), ("股票简称",))
+
+        def _do() -> pd.DataFrame:
+            ak = _akshare()
+            return norm(ak.stock_research_report_em(symbol=code))
+
+        return self._fetch(f"resfc_{code}", _do, "pkl")
+
     # ---------------- 涨停股池 / 炸板股池
 
     def get_zt_pool(self) -> Optional[pd.DataFrame]:

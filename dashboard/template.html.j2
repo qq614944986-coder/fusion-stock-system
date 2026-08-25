@@ -107,6 +107,9 @@
 <!-- ⑤ 短中长线评分总揽 -->
 <div class="card"><h2>④ 短中长线评分总揽 <span class="chain">↳ 门槛板块 → 候选宇宙 → 评分+次日概率</span></h2><div id="pools"></div></div>
 
+<!-- ④.5 双轨机会卡片 -->
+<div class="card"><h2>④ 双轨机会卡片 <span class="chain">↳ 左轨预期差低吸 + 右轨主升跟随（老樊执行）</span></h2><div id="oppCards"></div></div>
+
 <!-- ⑥ 短线观察池复盘 -->
 <div class="card"><h2>⑤ 短线观察池复盘 <span class="chain">↳ 短线候选 → 次日验证 → 去弱留强(破5日线删)</span></h2><div id="poolReview"></div></div>
 
@@ -324,6 +327,30 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
     return `<div class="tbl-wrap"><table>${h}</table></div>`;
   }
   document.getElementById("jxTop").innerHTML = jxTbl(P.精选);
+})();
+
+// ---------- ④.5 双轨机会卡片
+(function(){
+  const EXEC = {"双轨":"#f85149","右轨主升跟随":"#3fb950","左轨预期差低吸":"#58a6ff","温和左侧布局":"#8957e5"};
+  const cards = D.cards||[];
+  if(!cards.length){ document.getElementById("oppCards").innerHTML =
+    "<div class='factor-note'>（今日无符合双轨介入位的机会卡 · 东财封禁/降级期候选受限，解封后恢复）</div>"; return; }
+  document.getElementById("oppCards").innerHTML = cards.map(c=>{
+    const sigs=(c.signals||[]).map(s=>`<span class="tag" style="background:#1c2129">[${s.kind}]${esc(s.name)} ${esc(s.value||"")}</span>`).join("");
+    const anchors=(c.anchors||{}); const aTxt=["估值"+((anchors.est_ok?"✓":"✗")||"✗"),"研报"+((anchors.forecast_ok?"✓":"✗")||"✗"),"产业"+((anchors.trend_ok?"✓":"✗")||"✗")].join(" ");
+    return `<div class="rv-block" style="border:1px solid ${EXEC[c.exec_kind]||'#30363d'}44;border-radius:8px;padding:10px 12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>${esc(c.name)}</b><span class="wcode" style="font-size:11px;color:#8b949e">${c.code}</span>
+        <span class="tag" style="background:#12283a;color:#7ec3ff">${esc(c.track)}</span>
+        <span style="color:${EXEC[c.exec_kind]||'#d29922'};font-weight:600">${esc(c.exec_kind)}</span>
+        <span class="factor-note">介入：${esc(c.exec_sig)}</span></div>
+      <div style="font-size:12px;color:#9db4d6;margin:6px 0">${sigs||'<span class="factor-note">无稳定异动（仅观察）</span>'}</div>
+      <div style="font-size:11.5px;color:#8b949e">${aTxt} &nbsp; ${esc((c.evidence||[]).join(" · "))}</div>
+      ${c.wave&&c.wave.passes?`<div style="font-size:11.5px;color:#3fb950">右轨门槛过：${Object.entries(c.wave.gates||{}).filter(([_,v])=>v).map(([k])=>k).join("+")} · 主升${c.wave.score}分</div>`:""}
+      <div style="font-size:12px;color:#8fd8b4;margin-top:5px;border-top:1px dashed #21262d;padding-top:4px">${esc(c.thesis)}</div>
+      <div style="font-size:11.5px;color:#c8b48a">放弃条件：${esc(c.risk_off)}</div>
+    </div>`;
+  }).join("");
 })();
 
 // ---------- ⑤ 观察池复盘

@@ -81,6 +81,16 @@ eod:
   gain_range: [3, 9.5]
   volume_ratio_min: 1.2
   sector_top_n: 10
+opportunity:                   # 双轨选股（v1.0）
+  universe_limit: 24           # 机会候选宇宙上限（复用候选宇宙）
+  left:
+    est_pctile_max: 40         # 估值锚·价格分位上限(%)
+    mild_pctile_max: 40        # 温和左侧布局·价格分位上限
+    vr_shrink: 0.9             # 温和布局·缩量企稳量比(<)
+  right:
+    max_bias20: 19.0           # 乖离约束上限(%)
+    max_turnover: 25.0         # 极端换手上限(%)
+    require_zt_or_top10: true  # 板块共振要求(涨停≥1 或 排名前10)
 sell_rules:                       # 7.2 李致远卖出
   stop_loss_short: -5
   stop_loss_swing: -8
