@@ -85,12 +85,29 @@ def screen_sectors(boards: Optional[pd.DataFrame],
         for c in cons["code"].astype(str).str.zfill(6):
             stock_board_map[c] = bd
 
-    # 板块内涨停股（按股票→板块映射）
+    # 板块内涨停股（优先用成分股映射；成分股缺失（东财封禁）时降级用涨停池自带 industry 字段）
+    board_names = [str(b) for b in boards["board"]] if "board" in boards.columns else []
+
+    def _match_board(ind) -> Optional[str]:
+        """涨停池 industry 常为截断名（如'汽车零部'4字），与完整板块名做前缀匹配。"""
+        s = str(ind).strip() if isinstance(ind, str) and str(ind).strip() else ""
+        if not s:
+            return None
+        if s in board_names:
+            return s
+        for bn in board_names:
+            if bn.startswith(s):
+                return bn
+        return None
+
     zt_by_board: dict = {}
     if zt_pool is not None and not zt_pool.empty and "code" in zt_pool.columns:
         for _, r in zt_pool.iterrows():
             code = str(r["code"]).zfill(6)
             bd = stock_board_map.get(code)
+            if not bd:
+                # 降级：涨停池自带"所属行业"（东财 push2ex 域名，封禁期仍可用）
+                bd = _match_board(r.get("industry"))
             if bd:
                 zt_by_board.setdefault(bd, []).append(r)
 
@@ -220,27 +237,58 @@ def screen_sectors(boards: Optional[pd.DataFrame],
     rows.sort(key=lambda x: -x["total"])
     for i, row in enumerate(rows):
         row["rank"] = i + 1
+    # 概念别名（用户需求：行业名→熟悉概念名，如 元件→PCB）
+    try:
+        from .track_signals import board_display_name
+        for row in rows:
+            row["board_alias"] = board_display_name(row["board"])
+    except ImportError:
+        for row in rows:
+            row["board_alias"] = row["board"]
 
     gate_n = int(scfg["top_n_gate"])
     gate_top_n = [r["board"] for r in rows[:gate_n]]
 
-    # 进攻/防御标签（按情绪区间）
+    # 进攻/防御标签（按情绪区间；量能比缺失（东财封禁降级）时用涨停梯队+涨幅替代判据）
     attack_boards, defend_boards = [], []
     for r in rows:
-        if zone_name in ("偏强区", "高热区"):
-            if (r["量能比raw"] or 0) > float(scfg["volume_ratio_good"]) and r["max_lianban"] >= 3:
+        vr_raw = r["量能比raw"]
+        vr_ok = vr_raw is not None          # 量能比可用性（封禁期板块历史缺失→None）
+        if zone_name in ("偏强区", "高热区", "震荡区"):
+            # 进攻：量能比+梯队（量能比缺失时降级：涨停梯队≥3 且 当日涨幅>2%）
+            if vr_ok:
+                atk = vr_raw > (float(scfg["volume_ratio_good"]) if zone_name != "震荡区"
+                                else float(scfg["volume_ratio_good"]) * 0.8) and r["max_lianban"] >= 3
+            else:
+                atk = r["max_lianban"] >= 3 and r["当日涨幅"] > 2.0
+            if atk:
                 r["tag"] = "进攻"
                 attack_boards.append(r["board"])
             else:
                 r["tag"] = ""
         elif zone_name in ("冰点区", "退潮区"):
-            if r["当日涨幅"] > 0 and (r["换手率raw"] is not None and r["换手率raw"] < 3):
-                r["tag"] = "防御"
-                defend_boards.append(r["board"])
-            else:
-                r["tag"] = ""
+            # 防御：涨幅为正 + 低换手（换手缺失时降级：涨幅为正 且 板块总分前10）
+            if r["当日涨幅"] > 0:
+                if r["换手率raw"] is not None:
+                    dfd = r["换手率raw"] < 3
+                else:
+                    dfd = r["rank"] <= 10
+                if dfd:
+                    r["tag"] = "防御"
+                    defend_boards.append(r["board"])
+                    continue
+            r["tag"] = ""
         else:
             r["tag"] = ""
+
+    # 震荡区补防御标签（涨势稳健型：广度>60% 且 涨幅为正 的前10板块）
+    if zone_name == "震荡区":
+        for r in rows:
+            if r["tag"]:
+                continue
+            if r["rank"] <= 10 and r["当日涨幅"] > 0 and (r.get("breadth") or 0) >= 60:
+                r["tag"] = "防御"
+                defend_boards.append(r["board"])
 
     # 埋伏建议文案（用户需求：进攻/防守板块的埋伏建议，由主力流入+广度+涨幅构成）
     ambush_attack = _ambush_advice(

@@ -80,7 +80,7 @@ def detect_anomalies(code, name, hist: Optional[pd.DataFrame], rrow: Optional[di
     min5 = float(vol_s.iloc[-5:].min()) if len(vol_s) >= 5 else None
 
     # ================= 价位类 =================
-    pct_now = _num(rrow.get("pct_chg")) if rrow else None
+    pct_now = _num(rrow.get("pct_chg")) if rrow is not None else None
     if pct_now is None and pct_s is not None and len(pct_s):
         pct_now = float(pct_s.iloc[-1])
     # L1a 低位温和放量（先手补涨，非追高）

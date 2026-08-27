@@ -175,11 +175,32 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
       <div class="amt">${i.amount_yi==null?"":"成交额 "+i.amount_yi+"亿"}</div></div>`).join("");
   const gi = (M.global_indices||[]).map(g=>
     `<span class="rt-item">外围 ${esc(g.name)} <b class="${pctCls(g.pct_chg)}">${pct(g.pct_chg)}</b></span>`).join("");
+  const dlt = M.turnover_delta_prev;
+  const S = M.turnover_series||[];
+  let volHtml = `<span class="rt-item">量能较前日 <b class="${dlt==null?"":(dlt>0?"num-up":"num-down")}">${dlt==null?"—":(dlt>0?"放量+":"缩量")+Math.abs(dlt)+"%"}</b></span>` +
+    `<span class="rt-item">较5日均 <b class="${pctCls((M.turnover_ratio_5d||1)-1)}">${M.turnover_ratio_5d==null?"—":"×"+M.turnover_ratio_5d}</b></span>`;
+  if(M.turnover_trend) volHtml += `<span class="rt-item" style="color:var(--dim)">${esc(M.turnover_trend)}</span>`;
+  let chartHtml = "";
+  if(S.length>=2){
+    chartHtml = `<div id="volChart" style="width:100%;height:150px;margin-top:6px"></div>`;
+  }
   document.getElementById("macroStrip").innerHTML =
-    `<span class="rt-item">两市成交额 <b>${M.turnover_yi==null?"—[数据缺失]":M.turnover_yi+"亿"}</b></span>` +
-    `<span class="rt-item">量能比(vs5日均) <b class="${pctCls((M.turnover_ratio_5d||1)-1)}">${M.turnover_ratio_5d==null?"—":M.turnover_ratio_5d}</b></span>` +
-    gi +
+    `<span class="rt-item">两市成交额 <b>${M.turnover_yi==null?"—[数据缺失]":M.turnover_yi+"亿"}</b></span>` + volHtml + gi + chartHtml +
     `<div style="margin-top:6px" class="factor-note">${esc(M.summary||"")}</div>`;
+  if(S.length>=2){
+    const c = echarts.init(document.getElementById("volChart"));
+    c.setOption({
+      grid:{left:52,right:10,top:18,bottom:22},
+      tooltip:{trigger:"axis",formatter:p=>`${p[0].name}<br/>成交额 ${p[0].value}亿`},
+      xAxis:{type:"category",data:S.map(s=>s.date.slice(5)),axisLabel:{color:"#8b949e",fontSize:10}},
+      yAxis:{type:"value",axisLabel:{color:"#8b949e",fontSize:10,formatter:v=>(v/10000)+"万亿"},splitLine:{lineStyle:{color:"#21262d"}}},
+      series:[{type:"bar",data:S.map((s,i)=>({value:s.yi,
+        itemStyle:{color:i===S.length-1?"#e8b93e":(i>0&&s.yi>=S[i-1].yi?"#3d6fae":"#31517d")}})),
+        barWidth:"62%",markLine:{silent:true,symbol:"none",
+          lineStyle:{type:"dashed",color:"#8b949e"},label:{color:"#8b949e",fontSize:9,formatter:"5日均"},
+          data:[{yAxis:(S.slice(0,-1).reduce((a,b)=>a+b.yi,0)/Math.max(1,S.length-1))}]}}]
+    });
+  }
 })();
 
 // ---------- ② 情绪周期：30日走势 + 表盘 + 实时指标 + 雷达
@@ -256,11 +277,13 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
 // ---------- ③ 板块轮动榜（加列：当日涨幅/上涨广度/领涨股/主力净流入）
 (function(){
   const dims = ["连板节奏","上攻意愿","主买占比","换手率","量能比","排名趋势"];
+  const alias = D.board_alias_map||{};
   let h = "<tr><th>#</th><th>板块</th><th>总分</th><th>当日涨幅</th><th>上涨广度</th><th>领涨股</th><th>主力净流入</th>" +
           dims.map(d=>`<th>${d}</th>`).join("") + "<th>排名趋势</th><th>攻防</th></tr>";
   (D.sectors.boards||[]).forEach(b=>{
     const tag = b.tag==="进攻"?'<span class="tag tag-attack">进攻</span>':b.tag==="防御"?'<span class="tag tag-defend">防御</span>':"";
-    h += `<tr><td>${b.rank}</td><td>${esc(b.board)}</td><td><b>${b.total}</b></td>` +
+    const bname = alias[b.board] ? `${esc(b.board)}<span style="color:#e8b93e;font-size:11px">·${esc(alias[b.board])}</span>` : esc(b.board);
+    h += `<tr><td>${b.rank}</td><td>${bname}</td><td><b>${b.total}</b></td>` +
       `<td class="${pctCls(b["当日涨幅"])}">${pct(b["当日涨幅"])}</td>` +
       `<td>${b.breadth==null?"—":b.breadth+"%"}<span class="factor-note">（${b.up_count??0}↑/${b.down_count??0}↓）</span></td>` +
       `<td>${esc(b.leader_stock||"—")}</td>` +
@@ -283,12 +306,14 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   }
   function poolTbl(rows, isShort){
     if(!rows || !rows.length) return "<div class='factor-note'>（空 · 宁缺毋滥）</div>";
+    const alias = D.board_alias_map||{};
     let h = "<tr><th>代码</th><th>名称</th><th>板块</th><th>现价</th><th>涨幅</th><th>主力流入</th>" +
             "<th>换手率</th><th>乖离60</th><th>评分</th><th>次日收红率</th><th>冲高率</th><th>倾向</th>" +
             (isShort?"<th>S级/短线特征</th>":"<th>板块排名</th>") + "<th>建议动作</th></tr>";
     rows.forEach(r=>{
       const pb = r.prob||{};
-      h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${esc(r.board||"—")}</td>
+      const bd = r.board ? (alias[r.board] ? `${esc(r.board)}<span style="color:#e8b93e;font-size:10px">·${esc(alias[r.board])}</span>` : esc(r.board)) : "—";
+      h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${bd}</td>
         <td>${r.price==null?"—":r.price}</td>
         <td class="${pctCls(r.pct_chg)}">${pct(r.pct_chg)}</td>
         <td class="${pctCls(r.main_net_pct)}">${r.main_net_pct==null?"—":pct(r.main_net_pct)}</td>
@@ -366,11 +391,12 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   }
   function reviewTbl(rows){
     if(!rows || !rows.length) return "<div class='factor-note'>（空）</div>";
-    let h = "<tr><th>入选时间</th><th>评分</th><th>入选价</th><th>次日开盘</th><th>次日最高</th><th>次日收盘</th>" +
+    let h = "<tr><th>股票</th><th>入选时间</th><th>评分</th><th>入选价</th><th>次日开盘</th><th>次日最高</th><th>次日收盘</th>" +
             "<th>开盘收益</th><th>最高收益</th><th>状态总结</th><th>老樊模型</th><th>入选原因</th></tr>";
     rows.forEach(r=>{
       const nd = r.next_day;
-      h += `<tr><td>${esc(r.added_date||"—")}</td><td>${r.score??"—"}</td><td>${r.add_price??"—"}</td>` +
+      h += `<tr><td><b>${esc(r.name||"—")}</b> <span style="font-size:11px;color:#8b949e">${r.code}</span></td>
+        <td>${esc(r.added_date||"—")}</td><td>${r.score??"—"}</td><td>${r.add_price??"—"}</td>` +
         `<td>${nd?nd.open:"—"}</td><td>${nd?nd.high:"—"}</td><td>${nd?nd.close:"—"}</td>` +
         `<td class="${nd?pctCls(nd.open_ret):""}">${nd?pct(nd.open_ret):"—"}</td>` +
         `<td class="${nd?pctCls(nd.high_ret):""}">${nd?pct(nd.high_ret):"—"}</td>` +
@@ -406,15 +432,17 @@ const num1 = v => v==null?"—":Number(v).toFixed(1);
   const rows = (D.pools&&D.pools.打板)||[];
   if(!rows.length){ document.getElementById("limitup").innerHTML =
     "<div class='factor-note'>（今日无符合条件标的 · 一字/炸板/资金流出/极端换手已排除）</div>"; return; }
+  const alias2 = D.board_alias_map||{};
   let h = "<tr><th>代码</th><th>名称</th><th>板位</th><th>封板时间</th><th>开板</th><th>量比</th><th>换手率</th>" +
           "<th>主力净额</th><th>近5日涨幅</th><th>板块（共振）</th><th>打板评分</th><th>建议</th><th>次日执行提示</th></tr>";
   rows.forEach(r=>{
+    const bd = r.board ? (alias2[r.board] ? `${esc(r.board)}<span style="color:#e8b93e;font-size:10px">·${esc(alias2[r.board])}</span>` : esc(r.board)) : "—";
     h += `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td><b>${r.lian_ban??"—"}板</b></td>
       <td>${esc(r.first_seal_time||"—")}</td><td>${r.open_times??0}次</td>
       <td>${r.vr==null?"—":r.vr}</td><td>${r.turnover==null?"—":r.turnover+"%"}</td>
       <td class="${pctCls(r.main_net_pct)}">${r.main_net_pct==null?"—":pct(r.main_net_pct)}</td>
       <td class="${pctCls(r.pct5)}">${pct(r.pct5)}</td>
-      <td>${esc(r.board||"—")}<span class="factor-note">（${r.board_zt_count??0}涨停/梯队${r.board_ladder??0}档）</span></td>
+      <td>${bd}<span class="factor-note">（${r.board_zt_count??0}涨停/梯队${r.board_ladder??0}档）</span></td>
       <td><b>${r.score??"—"}</b></td><td>${esc(r.action||"—")}</td>
       <td><span class="factor-note">${esc(r.next_exec||"—")}</span></td></tr>`;
   });

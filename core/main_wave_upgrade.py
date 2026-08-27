@@ -59,10 +59,10 @@ def evaluate(hist: Optional[pd.DataFrame], rrow: Optional[dict], bctx: dict,
     vr = None
     if vol is not None and len(vol) >= 21 and vol.iloc[-21:-1].mean():
         vr = float(vol.iloc[-1] / vol.iloc[-21:-1].mean())
-    pct_today = _num(rrow.get("pct_chg")) if rrow else None
+    pct_today = _num(rrow.get("pct_chg")) if rrow is not None else None
     if vr is not None and pct_today is not None and vr > 1.8 and pct_today < 1.0:
         vh = False; vs.append(f"放量滞涨(量比{vr:.1f}涨{pct_today:+.1f}%)")
-    tover = _num(rrow.get("turnover")) if rrow else None
+    tover = _num(rrow.get("turnover")) if rrow is not None else None
     if tover is not None and tover > 25:
         vh = False; vs.append(f"极端换手{tover:.0f}%")
     reasons.extend(vs or ["量价健康"])

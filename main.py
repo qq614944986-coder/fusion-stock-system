@@ -34,7 +34,7 @@ from core.probability import next_day_probability
 from core.anomaly_radar import detect_anomalies
 from core.expectation_gap import evaluate as eg_evaluate
 from core.main_wave_upgrade import evaluate as mw_evaluate
-from core.track_signals import classify_detail as track_detail
+from core.track_signals import classify_detail as track_detail, BOARD_ALIAS
 from core.opportunity_card import build_card
 from core import fusion_engine as fe
 
@@ -113,6 +113,9 @@ def _short_feature_check(res: dict) -> tuple[bool, str]:
     br = res.get("board_rank")
     zt = res.get("board_zt_count") or 0
     if br is None and not zt:
+        # 板块上下文缺失（东财封禁、快照兜底宇宙 bd=None）时的替代判据：强动量
+        if vr is not None and vr >= 1.5 and (res.get("pct_chg") or 0) >= 3.0:
+            return True, f"评分{score:.0f}+强动量(量比{vr}·涨{res.get('pct_chg'):.1f}%)〔板块降级〕"
         return False, ""
     mainline = (br is not None and br <= 10) or zt >= 1
     if not mainline:
@@ -332,6 +335,8 @@ def run(t0_signal: str = "none") -> Path:
                 if not is_main_board(code):
                     continue
                 universe.append((code, name, None, float(amt)))
+                # 快照行写入行情映射：pct/换手/现价 供三线评分与分池判据使用
+                cons_row_map[code] = r
             universe.sort(key=lambda u: -u[3])
             universe = universe[:total_limit]
             log.info("候选宇宙走快照兜底：%d 只（成分股接口不可用）", len(universe))
@@ -376,6 +381,9 @@ def run(t0_signal: str = "none") -> Path:
         res["price"] = float(close_s.iloc[-1])
         res["pct_chg"] = None if crow is None or pd.isna(crow.get("pct_chg")) else float(crow.get("pct_chg"))
         res["turnover"] = None if crow is None or pd.isna(crow.get("turnover")) else float(crow.get("turnover"))
+        res["spot_vr"] = vr          # 回写量比：S级/短线特征判定依赖（score_stock 不透传 ctx）
+        res["board_rank"] = board_rank_map.get(bd)
+        res["board_zt_count"] = len(zt_by_board.get(bd, []))
         res["bias20"] = None
         res["bias60"] = None
         if len(close_s) >= 60:
@@ -401,7 +409,10 @@ def run(t0_signal: str = "none") -> Path:
             if short_feat and not s_grade:
                 res["s_reason"] = short_why
             short_rows.append(res)
-        elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and res["passed_gate"]:
+        elif res["score"] >= float(cfg["stock_score"]["pool_threshold"]) and \
+                (res["passed_gate"] or
+                 # 板块数据缺失（快照兜底宇宙 bd=None）时的中线降级判据：放量上行即视为主升确认
+                 (bd is None and (res.get("pct_chg") or 0) >= 2.0 and (res.get("spot_vr") or 0) >= 1.2)):
             mid_rows.append(res)
         elif res["score"] >= 60:
             long_rows.append(res)
@@ -926,6 +937,7 @@ def run(t0_signal: str = "none") -> Path:
                   "打板": zt_rows, "尾盘": eod_rows, "精选": jx_rows},
         "pool_review": review_payload,
         "cards": opcards,
+        "board_alias_map": BOARD_ALIAS,
         "limitup_discipline": LIMITUP_DISCIPLINE,
         "eod": eod_rows,
         "positions": pos_payload,
